@@ -1,0 +1,19 @@
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  __main__ : main:336 | ----------------------------------------gui_start----------------------------------------
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  __main__ : main:339 | loading config start
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  __main__ : main:341 | loading config finish
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  server.server : server:51 |  Server is init
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  server.server : server:58 |  Server is listening on 0.0.0.0:8000.block size=1024
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  __main__ : main:355 | server_thread子线程开始运行
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  __main__ : main:450 | image_process_thread |子线程开始运行
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  __main__ : main:471 | video_process_thread |子线程开始运行
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  __main__ : main:482 | start Qt
+2025-10-31 19:21:55 | INFO |MainProcess | MainThread |  theme.ThemeManager : ThemeManager:64 | ThemeManger:instance._current_theme:  light
+2025-10-31 19:21:56 | INFO |MainProcess | MainThread |  ui.custom_ui.BarChart : BarChart:278 | charts data update thread start
+2025-10-31 19:21:56 | INFO |MainProcess | MainThread |  index.tab_7 : tab_7:408 | status update thread start
+2025-10-31 19:21:56 | INFO |MainProcess | MainThread |  __main__ : main:492 | Appliacation start
+2025-10-31 19:22:24 | INFO |MainProcess | MainThread |  __main__ : main:197 | ----------------------------------------quit Qt application----------------------------------------
+2025-10-31 19:22:24 | INFO |MainProcess | MainThread |  __main__ : main:200 | Stopping server_thread...
+2025-10-31 19:22:25 | INFO |MainProcess | MainThread |  __main__ : main:206 | server_thread stopped
+2025-10-31 19:22:25 | INFO |MainProcess | MainThread |  __main__ : main:218 | Stopping image_process_thread...
+2025-10-31 19:22:25 | INFO |MainProcess | MainThread |  __main__ : main:225 | Stopping video_process_thread...
+2025-10-31 19:22:25 | INFO |MainProcess | MainThread |  __main__ : main:177 | Flushing log sinks before exit

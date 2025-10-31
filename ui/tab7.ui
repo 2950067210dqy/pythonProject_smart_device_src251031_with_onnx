@@ -1,0 +1,449 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>tab7_frame</class>
+ <widget class="QMainWindow" name="tab7_frame">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>911</width>
+    <height>584</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MainWindow</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <property name="styleSheet">
+    <string notr="true">/* ===== 浅色主题基础 ===== */
+QWidget#centralwidget { background:#f5f6f8; color:#333; font-family:&quot;Microsoft YaHei UI&quot;; }
+
+/* 卡片容器 */
+QFrame#status_frame, QFrame#graphic_frame { background:#ffffff; border:1px solid #dcdfe3; border-radius:10px; }
+
+/* 文本组件 */
+QTextBrowser, QPlainTextEdit { background:#ffffff; border:1px solid #d2d5da; border-radius:6px; padding:4px; font-size:10pt; }
+QTextBrowser .warn { color:#d48806; }
+QTextBrowser .error { color:#d32029; }
+
+/* 标题/标签 */
+QLabel#label, QLabel#video_slider_text { font-weight:600; letter-spacing:0.5px; color:#555; }
+
+/* 按钮 */
+QPushButton { background:#2F6FEB; border:1px solid #2a62d6; border-radius:6px; color:#fff; padding:5px 16px; font-size:10pt; }
+QPushButton:hover { background:#4785ff; }
+QPushButton:pressed { background:#1d4fa8; }
+QPushButton:disabled { background:#c5ccd4; color:#ffffff; }
+
+/* 滑块 */
+QSlider::groove:horizontal { height:6px; background:#dcdfe3; border-radius:3px; }
+QSlider::handle:horizontal { background:#2F6FEB; width:16px; height:16px; margin:-5px 0; border-radius:8px; border:1px solid #2a62d6; }
+QSlider::handle:horizontal:hover { background:#4785ff; }
+
+/* 分隔线 */
+QFrame#line { border:none; background:#dcdfe3; max-height:1px; }
+
+/* 状态栏 */
+QStatusBar { background:#ffffff; border-top:1px solid #dcdfe3; }
+
+/* 滚动区域透明背景 */
+QScrollArea { border:0; background:transparent; }
+QScrollArea QWidget { background:transparent; }
+/* Modern Scrollbars */
+QScrollBar:vertical, QScrollBar:horizontal { background:transparent; width:10px; height:10px; margin:0; }
+QScrollBar::handle { background:#c2c7ce; border-radius:5px; min-height:20px; min-width:20px; }
+QScrollBar::handle:hover { background:#aab1ba; }
+QScrollBar::handle:pressed { background:#8d949c; }
+QScrollBar::add-line, QScrollBar::sub-line { background:transparent; width:0; height:0; }
+QScrollBar::add-page, QScrollBar::sub-page { background:transparent; }
+   </string>
+   </property>
+   <layout class="QVBoxLayout" name="main_layout">
+    <item>
+       <layout class="QHBoxLayout" name="top_layout" stretch="2,3">
+         <item>
+          <widget class="QWidget" name="left_panel">
+      <layout class="QVBoxLayout" name="left_panel_layout" stretch="0,1">
+       <item>
+        <widget class="QScrollArea" name="scrollArea_path">
+         <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+         </property>
+         <property name="maximumHeight">
+        <number>70</number>
+         </property>
+         <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>30</height>
+        </size>
+         </property>
+         <property name="sizeAdjustPolicy">
+        <enum>QAbstractScrollArea::AdjustToContents</enum>
+         </property>
+         <property name="widgetResizable">
+        <bool>true</bool>
+         </property>
+         <widget class="QWidget" name="scrollAreaWidgetContents">
+        <property name="geometry">
+         <rect>
+          <x>0</x>
+          <y>0</y>
+          <width>352</width>
+          <height>70</height>
+         </rect>
+        </property>
+        <layout class="QVBoxLayout" name="scrollArea_path_layout">
+         <item>
+          <widget class="QPlainTextEdit" name="plainTextEdit">
+           <property name="sizePolicy">
+          <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+           </property>
+           <property name="undoRedoEnabled">
+          <bool>false</bool>
+           </property>
+           <property name="readOnly">
+          <bool>true</bool>
+           </property>
+           <property name="plainText">
+          <string>Path/to/file</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+         </widget>
+        </widget>
+       </item>
+       <item>
+        <widget class="QStackedWidget" name="media_stack">
+         <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>0</horstretch>
+         <verstretch>1</verstretch>
+        </sizepolicy>
+         </property>
+         <widget class="QWidget" name="image_page">
+        <attribute name="title">
+         <string>Images</string>
+        </attribute>
+        <layout class="QVBoxLayout" name="image_page_layout">
+         <item>
+          <widget class="QLabel" name="image_canvas">
+           <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>1</verstretch>
+          </sizepolicy>
+           </property>
+           <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>260</height>
+          </size>
+           </property>
+           <property name="alignment">
+          <set>Qt::AlignCenter</set>
+           </property>
+           <property name="text">
+          <string>暂无图片</string>
+           </property>
+           <property name="frameShape">
+          <enum>QFrame::StyledPanel</enum>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="image_toolbar_layout">
+           <item>
+          <widget class="QPushButton" name="image_prev_btn">
+           <property name="text">
+            <string>上一张</string>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <widget class="QPushButton" name="image_next_btn">
+           <property name="text">
+            <string>下一张</string>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <widget class="QPushButton" name="image_refresh_btn">
+           <property name="text">
+            <string>刷新</string>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <widget class="QPushButton" name="image_test_btn">
+           <property name="text">
+            <string>开始识别</string>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <widget class="QLabel" name="image_device_label">
+           <property name="text">
+            <string></string>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <spacer name="image_toolbar_spacer">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+           </item>
+           <item>
+          <widget class="QComboBox" name="image_device_combo">
+           <property name="sizeAdjustPolicy">
+            <enum>QComboBox::AdjustToContents</enum>
+           </property>
+          </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+         </widget>
+         <widget class="QWidget" name="video_page">
+        <attribute name="title">
+         <string>Video</string>
+        </attribute>
+        <layout class="QVBoxLayout" name="video_page_layout">
+         <item>
+          <widget class="QWidget" name="video_container">
+           <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>1</verstretch>
+          </sizepolicy>
+           </property>
+           <layout class="QVBoxLayout" name="video_layout"/>
+          </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="slider_row">
+           <item>
+          <widget class="QSlider" name="video_slider">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <widget class="QLabel" name="video_slider_text">
+           <property name="text">
+            <string>00:00/00:00</string>
+           </property>
+          </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="video_btn_layout">
+           <item>
+          <widget class="QPushButton" name="open_video_btn">
+           <property name="text">
+            <string>打开视频</string>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <widget class="QPushButton" name="start_video_btn">
+           <property name="text">
+            <string>开始播放</string>
+           </property>
+          </widget>
+           </item>
+           <item>
+          <widget class="QPushButton" name="stop_video_btn">
+           <property name="text">
+            <string>暂停播放</string>
+           </property>
+          </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QFrame" name="graphic_frame">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>600</width>
+          <height>400</height>
+         </size>
+        </property>
+         <property name="frameShape">
+         <enum>QFrame::StyledPanel</enum>
+        </property>
+        <property name="frameShadow">
+         <enum>QFrame::Raised</enum>
+        </property>
+        <layout class="QVBoxLayout" name="charts_layout">
+         <item>
+          <widget class="QScrollArea" name="scrollArea">
+           <property name="widgetResizable">
+            <bool>true</bool>
+           </property>
+           <widget class="QWidget" name="scrollAreaWidget">
+            <property name="geometry">
+             <rect>
+              <x>0</x>
+              <y>0</y>
+              <width>511</width>
+              <height>380</height>
+             </rect>
+            </property>
+           </widget>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QFrame" name="status_frame">
+      <property name="maximumHeight">
+      <number>220</number>
+      </property>
+   <property name="frameShape">
+    <enum>QFrame::StyledPanel</enum>
+   </property>
+   <property name="frameShadow">
+    <enum>QFrame::Raised</enum>
+   </property>
+      <layout class="QVBoxLayout" name="status_main_vlayout">
+       <item>
+        <layout class="QHBoxLayout" name="status_header_layout">
+         <item>
+          <widget class="QLabel" name="label">
+           <property name="text">
+            <string>状态栏：</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="Line" name="line">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="status_content_layout">
+         <item>
+          <widget class="QTextBrowser" name="statusBrowser">
+          <property name="verticalScrollBarPolicy">
+            <enum>Qt::ScrollBarAlwaysOn</enum>
+           </property>
+           <property name="horizontalScrollBarPolicy">
+            <enum>Qt::ScrollBarAlwaysOn</enum>
+           </property>
+           <property name="sizeAdjustPolicy">
+            <enum>QAbstractScrollArea::AdjustToContents</enum>
+           </property>
+           <property name="html">
+            <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;meta charset=&quot;utf-8&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+hr { height: 1px; border-width: 0; }
+li.unchecked::marker { content: &quot;\2610&quot;; }
+li.checked::marker { content: &quot;\2612&quot;; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Microsoft YaHei UI'; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;\n&lt;/p&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-size:9pt;&quot;&gt;\n&lt;/span&gt;&lt;/p&gt;
+&lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px; font-size:9pt;&quot;&gt;&lt;br /&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <layout class="QVBoxLayout" name="buttons_layout">
+           <item>
+            <widget class="QPushButton" name="openFL_btn">
+             <property name="text">
+              <string>打开蜚蠊存档文件夹</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="openYL_btn">
+             <property name="text">
+              <string>打开蝇类存档文件夹</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="openSL_btn">
+             <property name="text">
+              <string>打开鼠类存档文件夹</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="openReport_btn">
+             <property name="text">
+              <string>打开报告</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="buttons_spacer">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>20</width>
+               <height>40</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="action123132">
+   <property name="text">
+    <string>123132</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

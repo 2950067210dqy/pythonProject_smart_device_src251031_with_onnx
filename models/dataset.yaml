@@ -1,0 +1,8 @@
+image_dir: data/dataset/mixed
+label_dir: data/annotations/mixed
+train: data/splits/train.txt
+val: data/splits/val.txt
+test: data/splits/test.txt
+
+nc: 2
+names: ['fly', 'roach']

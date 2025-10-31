@@ -1,0 +1,8 @@
+2025-09-30 06:27:25 | INFO |MainProcess | MainThread |  __main__ : main:251 | ----------------------------------------gui_start----------------------------------------
+2025-09-30 06:27:25 | INFO |MainProcess | MainThread |  __main__ : main:254 | loading config start
+2025-09-30 06:27:42 | INFO |MainProcess | MainThread |  __main__ : main:251 | ----------------------------------------gui_start----------------------------------------
+2025-09-30 06:27:42 | INFO |MainProcess | MainThread |  __main__ : main:254 | loading config start
+2025-09-30 06:28:44 | INFO |MainProcess | MainThread |  __main__ : main:251 | ----------------------------------------gui_start----------------------------------------
+2025-09-30 06:28:44 | INFO |MainProcess | MainThread |  __main__ : main:254 | loading config start
+2025-09-30 06:28:44 | INFO |MainProcess | MainThread |  __main__ : main:256 | loading config finish
+2025-09-30 06:28:44 | ERROR |MainProcess | MainThread |  __main__ : main:263 | server_config配置文件Server-port错误！'Server'
