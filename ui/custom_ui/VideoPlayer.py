@@ -143,9 +143,9 @@ class VideoPlayer(QObject):
             global_setting.get_setting("data_buffer_video").append(self.video_path)
             logger.debug(f"data_buffer - 加{self.video_path}-长度{len(global_setting.get_setting('data_buffer_video'))}")
             # 如果所有线程都发送完数据，通知处理线程
-            if len(global_setting.get_setting("data_buffer_video")) == int(
-                    global_setting.get_setting("server_config")['Sender_SL']['device_nums']):
-                global_setting.get_setting("condition_video").notify()  # 通知处理线程开始处理
+            # if len(global_setting.get_setting("data_buffer_video")) == int(
+            #         global_setting.get_setting("server_config")['Sender_SL']['device_nums']):
+            global_setting.get_setting("condition_video").notify()  # 通知处理线程开始处理
             pass
         pass
 

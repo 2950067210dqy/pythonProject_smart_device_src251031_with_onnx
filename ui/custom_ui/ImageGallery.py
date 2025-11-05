@@ -194,7 +194,8 @@ class ImageGallery(ThemedWidget):
         if self.path_display is None:
             return
         previous = self.path_display.blockSignals(True)
-        self.path_display.setPlainText(text or "")
+        if text:
+            self.path_display.setPlainText(text)
         self.path_display.blockSignals(previous)
 
     def _update_device_combo(self, image_files: Optional[List[Path]] = None) -> None:

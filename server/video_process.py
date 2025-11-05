@@ -127,40 +127,23 @@ class Video_process(QThread):
                     condition_video.wait()
                     if not self.running:
                         break
-                    cfg = global_setting.get_setting("server_config")
-                    cycle_timeout = float(cfg['Dynamic'].get('cycle_timeout_video', '60'))
-                    cycle_start = global_setting.get_setting("cycle_start_time_video")
-                    if not cycle_start:
-                        global_setting.set_setting("cycle_start_time_video", time.time())
-                        cycle_start = time.time()
-                    last_seen_video = global_setting.get_setting("last_seen_video")
-                    active_video_devices = global_setting.get_setting("active_video_devices")
-                    video_cycle_received = global_setting.get_setting("video_cycle_received_uids")
-                    video_devices = global_setting.get_setting("video_device_uids")
 
-                    # 判定是否完成一轮或周期超时
-                    done = video_devices and video_cycle_received == video_devices
-                    timeout = cycle_start and (time.time() - cycle_start > cycle_timeout) and len(video_cycle_received) > 0
-                    if done or timeout:
-                        if timeout and not done:
-                            logger.warning(f"[VideoCycleTimeout] 周期超时 {cycle_timeout}s 强制处理 recv={len(video_cycle_received)} all={len(video_devices)}")
-                        try:
-                            # 将缓冲视频复制到 temp 目录作为处理输入
-                            for video_path in global_setting.get_setting("data_buffer_video"):
-                                try:
-                                    shutil.copy(video_path,
-                                                self.path + self.type + "_" + self.temp_folder+"/"+f"{self.type}_{1:06}_{time_util.get_format_file_from_time_no_millSecond(time.time())}.{video_path.split('.')[-1]}")
-                                except Exception as e:
-                                    logger.error(f"[VideoCopy] 复制失败 {video_path}: {e}")
-                            self.Video_Processing()
-                            global_setting.set_setting("data_buffer_video", [])
-                            video_cycle_received.clear()
-                            global_setting.set_setting("cycle_start_time_video", time.time())
-                            global_setting.get_setting("processing_done").set()
-                        except Exception as e:
-                            logger.error(f"video_process错误：{e}")
-                    else:
-                        logger.debug("[VideoProcess] 被唤醒但未满足所有视频设备到齐条件，忽略本次")
+                    try:
+                        # 将缓冲视频复制到 temp 目录作为处理输入
+                        for video_path in global_setting.get_setting("data_buffer_video"):
+                            try:
+                                shutil.copy(video_path,
+                                            self.path + self.type + "_" + self.temp_folder+"/"+f"{self.type}_{1:06}_{time_util.get_format_file_from_time_no_millSecond(time.time())}.{video_path.split('.')[-1]}")
+                            except Exception as e:
+                                logger.error(f"[VideoCopy] 复制失败 {video_path}: {e}")
+                        self.Video_Processing()
+                        # global_setting.set_setting("data_buffer_video", ["!@3","!@3123"])
+                        # global_setting.set_setting("video_cycle_received_uids",["!@3123","!@3123123"])
+                        # global_setting.set_setting("cycle_start_time_video", time.time())
+                        global_setting.get_setting("processing_done").set()
+                    except Exception as e:
+                        logger.error(f"video_process错误：{e}")
+
                 if not self.running:
                     break
                 time.sleep(float(global_setting.get_setting("server_config")['Video_Process']['delay']))
@@ -192,7 +175,7 @@ class Video_process(QThread):
             time_single = video.split('_')[3].split(".")[0].replace("-", ":")
             # 2.更新报告
             self.data_save.update_data(date, time_single, name, nums)
-            report_logger.info(f"完成{name}数据分析")
+            report_logger.info(f"完成 {name}数据分析 -> {nums} (mouse)")
             # 3.归档
             shutil.move(self.path +video.split('_')[0]+"_"+ self.temp_folder + video, self.path +video.split('_')[0]+"_"+self.record_folder)
         self.data_save.csv_close()
@@ -207,5 +190,5 @@ class Video_process(QThread):
         except Exception as e:
             report_logger.error(f"{video_path}视频已损坏")
             return 0
-        return random.randint(0,30)
+        return random.randint(0,2)
     pass
