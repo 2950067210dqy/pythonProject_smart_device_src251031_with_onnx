@@ -34,7 +34,7 @@ exe = EXE(
     entitlements_file=None,
 )
 sender_analysis = Analysis(
-    ['socket_original/sender.py'],
+    ['socket_original/sender_for_dqy.py'],
     pathex=[],
     binaries=[],
     datas=[],

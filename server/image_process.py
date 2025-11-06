@@ -1,7 +1,10 @@
 import csv
+import datetime
 import os
+import random
 import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -230,20 +233,65 @@ def immediate_process_single(filename: str, save_dir: str) -> None:
     except Exception as exc:
         report_logger.error(f"即时处理失败 {filename}: {exc}")
 
+
 class report_writing:
     """
     将处理的坐标写入csv文件
     """
 
-    def __init__(self, file_path,file_name_preffix,file_name_suffix):
+    def __init__(self, file_path, file_name_preffix, file_name_suffix):
         self.csv_file = None
         self.csv_writer = None
         self.encoding = 'gbk'
+        self.max_retry_attempts = 5  # 最大重试次数
+        self.retry_delay = 1  # 重试间隔（秒）
+        self.file_lock = threading.Lock()  # 文件操作锁
 
         self.file_name_preffix = file_name_preffix
         self.file_name_suffix = file_name_suffix
-        self.file_direct_path=file_path
-        self.file_path = file_path+self.file_name_preffix+time_util.get_format_file_from_time(time.time())+self.file_name_suffix
+        self.file_direct_path = file_path
+        self.file_path = file_path + self.file_name_preffix + time_util.get_format_file_from_time(
+            time.time()) + self.file_name_suffix
+
+    def _safe_file_operation(self, operation_func, *args, **kwargs):
+        """
+        安全的文件操作，带重试机制
+        """
+        for attempt in range(self.max_retry_attempts):
+            try:
+                with self.file_lock:
+                    return operation_func(*args, **kwargs)
+            except PermissionError as e:
+                if attempt < self.max_retry_attempts - 1:
+                    print(f"文件被占用，尝试 {attempt + 1}/{self.max_retry_attempts}，{self.retry_delay}秒后重试...")
+                    time.sleep(self.retry_delay)
+                else:
+                    print(f"文件操作失败，已重试{self.max_retry_attempts}次: {e}")
+                    raise
+            except Exception as e:
+                print(f"文件操作出现未知错误: {e}")
+                raise
+
+    def _create_temp_file_copy(self):
+        """
+        创建临时文件副本用于读取
+        """
+        temp_file = self.file_path.replace('.csv', '_temp_read.csv')
+        try:
+            shutil.copy2(self.file_path, temp_file)
+            return temp_file
+        except Exception:
+            return None
+
+    def _cleanup_temp_file(self, temp_file):
+        """
+        清理临时文件
+        """
+        try:
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
 
     def get_latest_file(self, folder_path):
         if not os.path.exists(folder_path):
@@ -258,19 +306,20 @@ class report_writing:
         # 使用 max 函数找到修改时间最新的文件
         latest_file = max(files, key=os.path.getmtime)
         return latest_file
-    def csv_create(self):
-        if not os.path.exists(self.file_direct_path):
-            os.makedirs(self.file_direct_path)
-        with open(self.file_path, mode='w', newline='', encoding=self.encoding) as file:
-            self.csv_file = file
-            self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow(["日期", "时间", "设备号", "数量"])
 
-    # 更新或添加数据
-    def update_data(self,date,time,equipment_number,nums):
+    def csv_create(self):
+        def _create_operation():
+            if not os.path.exists(self.file_direct_path):
+                os.makedirs(self.file_direct_path)
+            with open(self.file_path, mode='w', newline='', encoding=self.encoding) as file:
+                writer = csv.writer(file)
+                writer.writerow(["日期", "时间", "设备号", "数量"])
+
+        return self._safe_file_operation(_create_operation)
+
+    def update_data(self, date, time, equipment_number, nums):
         # 读取现有数据
         current_data = self.csv_read()
-
 
         # 如果设备号已存在，更新数据，否则添加
         current_data[equipment_number] = {
@@ -281,66 +330,140 @@ class report_writing:
         }
 
         # 写回 CSV
-        self.csv_write_multiple( current_data)
-    # 定义一个函数来读取现有的 CSV 数据
+        self.csv_write_multiple(current_data)
+
     def csv_read(self):
-        data = {}
         """
-        data数据结构
-        {
-        '001': {'日期': '2025-06-24', '时间': '10:00', '设备号': '001', '数量': '10'},
-        '002': {'日期': '2025-06-24', '时间': '10:20', '设备号': '002', '数量': '15'}
-        }
+        安全读取CSV文件，支持文件被占用时的处理
         """
-        try:
-            with open(self.file_path, mode='r', encoding=self.encoding) as file:
-                reader = csv.DictReader(file)
-                for row in reader:
-                    # 使用设备号作为唯一标识
-                    if "设备号" in row.keys():
-                        data[row['设备号']] = row
-        except FileNotFoundError:
-            # 如果文件不存在，返回一个空的字典
-            pass
-        return data
+
+        def _read_operation():
+            data = {}
+            # 首先尝试直接读取
+            try:
+                with open(self.file_path, mode='r', encoding=self.encoding) as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        if "设备号" in row.keys():
+                            data[row['设备号']] = row
+                return data
+            except PermissionError:
+                # 如果文件被占用，尝试读取副本
+                temp_file = self._create_temp_file_copy()
+                if temp_file:
+                    try:
+                        with open(temp_file, mode='r', encoding=self.encoding) as file:
+                            reader = csv.DictReader(file)
+                            for row in reader:
+                                if "设备号" in row.keys():
+                                    data[row['设备号']] = row
+                        return data
+                    finally:
+                        self._cleanup_temp_file(temp_file)
+                else:
+                    raise
+            except FileNotFoundError:
+                return data
+
+        return self._safe_file_operation(_read_operation)
 
     def csv_read_not_dict(self):
+        """
+        安全读取CSV文件为列表格式
+        """
 
+        def _read_operation():
+            data = []
+            # 首先尝试直接读取
+            try:
+                with open(self.file_path, mode='r', encoding=self.encoding) as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        data.append(row)
+                return data
+            except PermissionError:
+                # 如果文件被占用，尝试读取副本
+                temp_file = self._create_temp_file_copy()
+                if temp_file:
+                    try:
+                        with open(temp_file, mode='r', encoding=self.encoding) as file:
+                            reader = csv.DictReader(file)
+                            for row in reader:
+                                data.append(row)
+                        return data
+                    finally:
+                        self._cleanup_temp_file(temp_file)
+                else:
+                    raise
+            except FileNotFoundError:
+                return data
+
+        return self._safe_file_operation(_read_operation)
+
+    def _generate_new_filepath(self):
         """
-        data数据结构
-        [
-         {'日期': '2025-06-24', '时间': '10:00', '设备号': '001', '数量': '10'},
-         {'日期': '2025-06-24', '时间': '10:20', '设备号': '002', '数量': '15'}
-        ]
+        生成一个全新的文件路径，避开被占用的文件
         """
-        data=[]
-        try:
-            with open(self.file_path, mode='r', encoding=self.encoding) as file:
-                reader = csv.DictReader(file)
-                for row in reader:
-                    data.append(row)
-        except FileNotFoundError:
-            # 如果文件不存在，返回一个空的字典
-            pass
-        return data
-    def csv_write_multiple(self,data):
-        with open(self.file_path, mode='w', encoding=self.encoding, newline='') as file:
-            fieldnames = ['日期', '时间', '设备号', '数量']
-            writer = csv.DictWriter(file, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(data.values())
-    def csv_write(self, date,time,equipment_number,nums):
-        # 先读在写
-        with open(self.file_path, mode='a', newline='', encoding=self.encoding) as file:
-            self.csv_file = file
-            self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow([date, time, equipment_number, nums])
+        timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        random_suffix = random.randint(100, 999)
+        new_filename = f"{self.file_name_preffix}{timestamp}_{random_suffix}{self.file_name_suffix}"
+        return os.path.join(self.file_direct_path, new_filename)
+
+    def csv_write_multiple(self, data):
+        """
+        如果原文件被占用，创建新文件写入
+        """
+
+        def _write_operation():
+            target_file = self.file_path
+            max_attempts = 3
+
+            for attempt in range(max_attempts):
+                try:
+                    with open(target_file, mode='w', encoding=self.encoding, newline='') as file:
+                        fieldnames = ['日期', '时间', '设备号', '数量']
+                        writer = csv.DictWriter(file, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(data.values())
+
+                    # 写入成功，更新文件路径
+                    if target_file != self.file_path:
+                        old_file = os.path.basename(self.file_path)
+                        new_file = os.path.basename(target_file)
+                        print(f"✅ 原文件 {old_file} 被占用，数据已写入新文件 {new_file}")
+                        self.file_path = target_file
+                    return
+
+                except PermissionError:
+                    if attempt < max_attempts - 1:
+                        # 生成新的文件路径
+                        target_file = self._generate_new_filepath()
+                        print(f"🔄 文件被占用，尝试写入新文件: {os.path.basename(target_file)}")
+                    else:
+                        raise Exception(f"无法写入文件，已尝试 {max_attempts} 次")
+
+        return self._safe_file_operation(_write_operation)
+
+    def csv_write(self, date, time, equipment_number, nums):
+        def _write_operation():
+            with open(self.file_path, mode='a', newline='', encoding=self.encoding) as file:
+                writer = csv.writer(file)
+                writer.writerow([date, time, equipment_number, nums])
+
+        return self._safe_file_operation(_write_operation)
 
     def csv_close(self):
         if self.csv_file is not None:
             self.csv_file.close()
             self.csv_file = None
             self.csv_writer = None
+
+    def set_retry_config(self, max_attempts=5, delay=1):
+        """
+        配置重试参数
+        """
+        self.max_retry_attempts = max_attempts
+        self.retry_delay = delay
 class Img_process(Thread):
     """图像识别算法线程 (使用 ONNX YOLO 推理)."""
 

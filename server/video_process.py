@@ -132,14 +132,15 @@ class Video_process(QThread):
                         # 将缓冲视频复制到 temp 目录作为处理输入
                         for video_path in global_setting.get_setting("data_buffer_video"):
                             try:
+                                random_device = random.randint(1,999999)
                                 shutil.copy(video_path,
-                                            self.path + self.type + "_" + self.temp_folder+"/"+f"{self.type}_{1:06}_{time_util.get_format_file_from_time_no_millSecond(time.time())}.{video_path.split('.')[-1]}")
+                                            self.path + self.type + "_" + self.temp_folder+"/"+f"{self.type}_{random_device:06}_{time_util.get_format_file_from_time_no_millSecond(time.time())}.{video_path.split('.')[-1]}")
                             except Exception as e:
                                 logger.error(f"[VideoCopy] 复制失败 {video_path}: {e}")
                         self.Video_Processing()
-                        # global_setting.set_setting("data_buffer_video", ["!@3","!@3123"])
-                        # global_setting.set_setting("video_cycle_received_uids",["!@3123","!@3123123"])
-                        # global_setting.set_setting("cycle_start_time_video", time.time())
+                        global_setting.set_setting("data_buffer_video", [])
+                        # global_setting.set_setting("video_cycle_received_uids",["AASL-123123-123123","AASL-234523-12323"])
+                        global_setting.set_setting("cycle_start_time_video", time.time())
                         global_setting.get_setting("processing_done").set()
                     except Exception as e:
                         logger.error(f"video_process错误：{e}")
@@ -169,10 +170,12 @@ class Video_process(QThread):
         else:
             self.data_save.file_path = latest_file_report_path
         for video in videos:
-            name = video.split('_')[0] + '_' + video.split('_')[1]
+            video_split = video.split('_')
+            name = video_split[0] + '_' + video_split[1]
+            time.sleep(2)
             nums = self.video_handle(video)
-            date = video.split('_')[2].replace("-", "")
-            time_single = video.split('_')[3].split(".")[0].replace("-", ":")
+            date =f"{video_split[2]}{video_split[3]}{video_split[4]}"
+            time_single =f"{video_split[5]}.{video_split[6]}.{video_split[7].split('.')[0]}"
             # 2.更新报告
             self.data_save.update_data(date, time_single, name, nums)
             report_logger.info(f"完成 {name}数据分析 -> {nums} (mouse)")
