@@ -61,9 +61,21 @@ class VideoPlayer(QObject):
 
     def on_media_status_changed(self, status):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
+
             # 播放结束信号
             print("播放结束信号")
             self.stop_video()
+            # 接收数据线程与视频处理线程同步处理
+            with  global_setting.get_setting("condition_video"):
+                # 接收到了数据
+                global_setting.get_setting("data_buffer_video").append(self.video_path)
+                logger.debug(
+                    f"data_buffer - 加{self.video_path}-长度{len(global_setting.get_setting('data_buffer_video'))}")
+                # 如果所有线程都发送完数据，通知处理线程
+                # if len(global_setting.get_setting("data_buffer_video")) == int(
+                #         global_setting.get_setting("server_config")['Sender_SL']['device_nums']):
+                global_setting.get_setting("condition_video").notify()  # 通知处理线程开始处理
+                pass
             pass
         elif status ==QMediaPlayer.MediaStatus.NoMedia:
             #没有媒体信号
@@ -137,16 +149,7 @@ class VideoPlayer(QObject):
         self.start_video_btn.setEnabled(False)
         self.stop_video_btn.setEnabled(True)
         self.media_player.play()
-        # 接收数据线程与视频处理线程同步处理
-        with  global_setting.get_setting("condition_video"):
-            # 接收到了数据
-            global_setting.get_setting("data_buffer_video").append(self.video_path)
-            logger.debug(f"data_buffer - 加{self.video_path}-长度{len(global_setting.get_setting('data_buffer_video'))}")
-            # 如果所有线程都发送完数据，通知处理线程
-            # if len(global_setting.get_setting("data_buffer_video")) == int(
-            #         global_setting.get_setting("server_config")['Sender_SL']['device_nums']):
-            global_setting.get_setting("condition_video").notify()  # 通知处理线程开始处理
-            pass
+
         pass
 
     def stop_video(self):
