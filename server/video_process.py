@@ -193,5 +193,5 @@ class Video_process(QThread):
         except Exception as e:
             report_logger.error(f"{video_path}视频已损坏")
             return 0
-        return random.randint(0,2)
+        return random.randint(1,1)
     pass

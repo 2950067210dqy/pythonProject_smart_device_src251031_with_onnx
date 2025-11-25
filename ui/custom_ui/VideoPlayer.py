@@ -64,7 +64,6 @@ class VideoPlayer(QObject):
 
             # 播放结束信号
             print("播放结束信号")
-            self.stop_video()
             # 接收数据线程与视频处理线程同步处理
             with  global_setting.get_setting("condition_video"):
                 # 接收到了数据
@@ -76,6 +75,8 @@ class VideoPlayer(QObject):
                 #         global_setting.get_setting("server_config")['Sender_SL']['device_nums']):
                 global_setting.get_setting("condition_video").notify()  # 通知处理线程开始处理
                 pass
+            self.stop_video()
+
             pass
         elif status ==QMediaPlayer.MediaStatus.NoMedia:
             #没有媒体信号
