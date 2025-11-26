@@ -21,7 +21,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='main',
+    name='有害生物智能化数据分析平台',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -32,6 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='img.ico'
 )
 sender_analysis = Analysis(
     ['socket_original/sender_for_dqy.py'],
@@ -53,7 +54,7 @@ sender_exe = EXE(
     sender_analysis.scripts,
     [],
     exclude_binaries=True,
-    name='sender',
+    name='有害生物智能化数据分析平台_下位机模拟',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -64,6 +65,7 @@ sender_exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='img.ico'
 )
 coll = COLLECT(
     exe,
