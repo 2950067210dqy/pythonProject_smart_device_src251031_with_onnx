@@ -1,3 +1,4 @@
+import os.path
 from pathlib import Path
 
 from PyQt6.QtCore import QUrl, QObject
@@ -140,8 +141,11 @@ class VideoPlayer(QObject):
             file_path, _ = QFileDialog.getOpenFileName(self.parent_frame, "打开视频文件", open_path.as_posix(), "视频文件 (*.mp4 *.avi *.mkv)")
             if file_path:
                 self.video_path = file_path
+                file_name = os.path.basename(file_path)
+
                 self.plainTextEdit.setPlainText(file_path)
-                # print(file_path)
+                global_setting.set_setting("choose_video_file_name", file_name)
+                # print(file_name)
                 self.media_player.setSource(QUrl.fromLocalFile(file_path))
                 self.start_video()
         except Exception as e:

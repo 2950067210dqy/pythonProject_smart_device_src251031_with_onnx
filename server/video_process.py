@@ -189,6 +189,21 @@ class Video_process(QThread):
         """
         try:
             logger.info(f"处理数据{self.path+ video_path.split('_')[0] + '_'+self.temp_folder+video_path}")
+            # 根据视频不同返回数值不同
+            choose_video_file_name:str=global_setting.get_setting("choose_video_file_name", None)
+            if choose_video_file_name is None:
+                return 0
+            choose_video_file_name = choose_video_file_name.split(".")[0]
+            if choose_video_file_name.lower()=="test":
+                return 1
+            elif choose_video_file_name.lower()=="test2":
+                return 2
+            elif choose_video_file_name.lower()=="test3":
+                return 4
+            elif choose_video_file_name.lower()=="test4":
+                return 0
+            else:
+                return 0
             video = cv2.VideoCapture(self.path + video_path.split('_')[0] + '_' + self.temp_folder + video_path)
         except Exception as e:
             report_logger.error(f"{video_path}视频已损坏")
