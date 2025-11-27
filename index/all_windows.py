@@ -30,7 +30,7 @@ class AllWindows():
     def _init_ui(self):
         # 主窗口实例化
         geometry =QRect(0,0,int(global_setting.get_setting("configer")['WINDOW']['width']),int(global_setting.get_setting("configer")['WINDOW']['height']))
-        self.mainWindow = Tab( parent=None, geometry= geometry, title=global_setting.get_setting("configer")['WINDOW']['title'], id=1)
+        self.mainWindow = Tab( parent=None, geometry= geometry, title=global_setting.get_setting("configer")['WINDOW']['title'],icon_path=global_setting.get_setting("configer")['WINDOW']['icon_path'] ,id=1)
 
         # 根据配置文件加载相应的ui
         self._generate()

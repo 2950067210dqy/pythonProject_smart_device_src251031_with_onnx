@@ -186,8 +186,9 @@ class ImageGallery(ThemedWidget):
         self._current_path = path
         self.canvas_label.setText("")
         self.canvas_label.setToolTip(str(path))
+
         self._apply_scaled_pixmap()
-        self._set_path_display(path.name)
+        self._set_path_display(str(path).replace(" ", ""))
         self._select_device_in_combo(self._extract_device_code(path))
 
     def _set_path_display(self, text: str) -> None:
