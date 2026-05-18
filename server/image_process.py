@@ -559,6 +559,8 @@ class Img_process(Thread):
             if not self.has_files():
                 with condition:
                     condition.wait(timeout=poll_interval or None)
+                # #  停止五秒好截图！记得删除
+                # time.sleep(5)
                 if not self.running:
                     break
                 # 醒来后再次检查是否有文件，没有则继续等待
