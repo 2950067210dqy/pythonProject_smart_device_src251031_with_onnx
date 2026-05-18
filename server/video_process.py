@@ -2,8 +2,10 @@ import csv
 import os
 import random
 import shutil
+import sys
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QThread
 from loguru import logger
@@ -13,6 +15,135 @@ from server.image_process import report_writing
 from util.time_util import time_util
 
 report_logger = logger.bind(category="report_logger")
+
+
+# 修改：视频端使用 models/best.pt 做老鼠检测，模型按需加载并缓存，避免每个视频重复加载。
+_MOUSE_YOLO_MODEL: Optional[Any] = None
+
+
+def _get_bundle_root() -> Path:
+    """Return project/resource root in both source and PyInstaller runtime."""
+
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _resolve_mouse_model_path() -> Path:
+    """Resolve the mouse YOLO pt model path."""
+
+    bundle_root = _get_bundle_root()
+    model_path = bundle_root / "models" / "best.pt"
+    if model_path.exists():
+        return model_path
+
+    # 修改：打包后允许把 models 文件夹放在 exe 同级目录，和图像模型加载逻辑保持一致。
+    if getattr(sys, "frozen", False):
+        exe_model_path = Path(sys.executable).resolve().parent / "models" / "best.pt"
+        if exe_model_path.exists():
+            return exe_model_path
+
+    return model_path
+
+
+def _get_mouse_yolo_model() -> Any:
+    """Lazy-load the YOLO model used for mouse video detection."""
+
+    global _MOUSE_YOLO_MODEL
+    if _MOUSE_YOLO_MODEL is not None:
+        return _MOUSE_YOLO_MODEL
+
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        raise RuntimeError("缺少 ultralytics/torch 依赖，无法加载 models/best.pt") from exc
+
+    model_path = _resolve_mouse_model_path()
+    if not model_path.exists():
+        raise FileNotFoundError(f"老鼠检测模型不存在: {model_path}")
+
+    _MOUSE_YOLO_MODEL = YOLO(str(model_path))
+    return _MOUSE_YOLO_MODEL
+
+
+def _box_iou(box_a: Tuple[float, float, float, float], box_b: Tuple[float, float, float, float]) -> float:
+    """Calculate IoU for two xyxy boxes."""
+
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter_area
+    return inter_area / union if union > 0 else 0.0
+
+
+def _extract_yolo_boxes(result: Any) -> List[Tuple[float, float, float, float]]:
+    """Extract xyxy boxes from an Ultralytics result."""
+
+    boxes = getattr(result, "boxes", None)
+    xyxy = getattr(boxes, "xyxy", None) if boxes is not None else None
+    if xyxy is None:
+        return []
+    return [tuple(map(float, box)) for box in xyxy.detach().cpu().tolist()]
+
+
+class _SimpleMouseTracker:
+    """Fallback tracker used when Ultralytics does not return stable track ids."""
+
+    def __init__(self, iou_threshold: float = 0.3, max_missed: int = 30) -> None:
+        self.iou_threshold = iou_threshold
+        self.max_missed = max_missed
+        self.next_id = 1
+        self.tracks: Dict[int, Dict[str, Any]] = {}
+        self.unique_ids = set()
+
+    def update(self, detections: List[Tuple[float, float, float, float]]) -> None:
+        matched_tracks = set()
+        matched_detections = set()
+        candidates: List[Tuple[float, int, int]] = []
+
+        for track_id, track in self.tracks.items():
+            for det_idx, det_box in enumerate(detections):
+                candidates.append((_box_iou(track["box"], det_box), track_id, det_idx))
+
+        for iou, track_id, det_idx in sorted(candidates, reverse=True):
+            if iou < self.iou_threshold:
+                break
+            if track_id in matched_tracks or det_idx in matched_detections:
+                continue
+            self.tracks[track_id]["box"] = detections[det_idx]
+            self.tracks[track_id]["missed"] = 0
+            matched_tracks.add(track_id)
+            matched_detections.add(det_idx)
+
+        for track_id in list(self.tracks):
+            if track_id not in matched_tracks:
+                self.tracks[track_id]["missed"] += 1
+                if self.tracks[track_id]["missed"] > self.max_missed:
+                    self.tracks.pop(track_id, None)
+
+        for det_idx, det_box in enumerate(detections):
+            if det_idx in matched_detections:
+                continue
+            track_id = self.next_id
+            self.next_id += 1
+            self.tracks[track_id] = {"box": det_box, "missed": 0}
+            self.unique_ids.add(track_id)
+
+    @property
+    def count(self) -> int:
+        return len(self.unique_ids)
+
+
 class Video_process(QThread):
     """
     图像识别算法线程
@@ -184,29 +315,104 @@ class Video_process(QThread):
         self.data_save.csv_close()
     def video_handle(self,video_path):
         """
-        图像识别算法
+        视频识别算法：使用 models/best.pt 检测老鼠，按跟踪 ID 统计整段视频中的独立个体数。
         :return:数量
         """
+        video_full_path: Optional[Path] = None
+        output_path: Optional[Path] = None
+        cap = None
+        writer = None
         try:
-            logger.info(f"处理数据{self.path+ video_path.split('_')[0] + '_'+self.temp_folder+video_path}")
-            # 根据视频不同返回数值不同
-            choose_video_file_name:str=global_setting.get_setting("choose_video_file_name", None)
-            if choose_video_file_name is None:
+            # 修改：按现有 SL_Temp 命名规则定位待处理视频。
+            type_code = video_path.split('_')[0]
+            temp_folder_name = self.temp_folder.strip("/\\")
+            temp_dir = Path(self.path) / f"{type_code}_{temp_folder_name}"
+            video_full_path = temp_dir / video_path
+            logger.info(f"处理数据 {video_full_path}")
+
+            model = _get_mouse_yolo_model()
+            cap = cv2.VideoCapture(str(video_full_path))
+            if not cap.isOpened():
+                report_logger.error(f"{video_path}视频无法打开")
                 return 0
-            choose_video_file_name = choose_video_file_name.split(".")[0]
-            if choose_video_file_name.lower()=="test":
-                return 1
-            elif choose_video_file_name.lower()=="test2":
-                return 2
-            elif choose_video_file_name.lower()=="test3":
-                return 4
-            elif choose_video_file_name.lower()=="test4":
+
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if width <= 0 or height <= 0:
+                report_logger.error(f"{video_path}视频尺寸异常")
                 return 0
-            else:
+
+            # 修改：先写临时标注视频，全部成功后再替换原 temp 视频，后续归档得到的就是带检测框的视频。
+            output_path = video_full_path.with_name(f"{video_full_path.stem}_detected_tmp{video_full_path.suffix}")
+            fourcc = cv2.VideoWriter_fourcc(*("XVID" if video_full_path.suffix.lower() == ".avi" else "mp4v"))
+            writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+            if not writer.isOpened():
+                report_logger.error(f"{video_path}标注视频创建失败")
                 return 0
-            video = cv2.VideoCapture(self.path + video_path.split('_')[0] + '_' + self.temp_folder + video_path)
+
+            unique_track_ids = set()
+            fallback_tracker = _SimpleMouseTracker(max_missed=max(15, int(fps * 2)))
+            used_yolo_track_ids = False
+            use_ultralytics_tracker = True
+            tracker_warning_logged = False
+
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+
+                # 修改：优先使用 Ultralytics 内置 track 的持久 ID，避免同一只老鼠跨帧重复计数。
+                if use_ultralytics_tracker:
+                    try:
+                        results = model.track(frame, persist=True, conf=0.25, iou=0.5, verbose=False)
+                    except Exception as exc:
+                        use_ultralytics_tracker = False
+                        if not tracker_warning_logged:
+                            report_logger.warning(f"YOLO track 不可用，切换到简易 IOU 跟踪: {exc}")
+                            tracker_warning_logged = True
+                        results = model.predict(frame, conf=0.25, iou=0.5, verbose=False)
+                else:
+                    results = model.predict(frame, conf=0.25, iou=0.5, verbose=False)
+
+                result = results[0] if results else None
+                if result is None:
+                    writer.write(frame)
+                    continue
+
+                boxes = getattr(result, "boxes", None)
+                track_ids = getattr(boxes, "id", None) if boxes is not None else None
+                if track_ids is not None:
+                    used_yolo_track_ids = True
+                    for track_id in track_ids.detach().cpu().tolist():
+                        unique_track_ids.add(int(track_id))
+                else:
+                    fallback_tracker.update(_extract_yolo_boxes(result))
+
+                annotated_frame = result.plot()
+                writer.write(annotated_frame)
+
+            mouse_count = len(unique_track_ids) if used_yolo_track_ids else fallback_tracker.count
+            logger.info(f"{video_path} 老鼠独立个体统计: {mouse_count}")
+
+            cap.release()
+            writer.release()
+            cap = None
+            writer = None
+            os.replace(str(output_path), str(video_full_path))
+            return mouse_count
         except Exception as e:
-            report_logger.error(f"{video_path}视频已损坏")
+            report_logger.error(f"{video_path}视频处理失败: {e}")
             return 0
-        return random.randint(1,1)
+        finally:
+            if cap is not None:
+                cap.release()
+            if writer is not None:
+                writer.release()
+            # 修改：异常时清理未完成的临时标注视频，避免下次被当成新视频重复处理。
+            if output_path is not None and output_path.exists() and video_full_path is not None and output_path != video_full_path:
+                try:
+                    output_path.unlink()
+                except Exception as cleanup_exc:
+                    report_logger.warning(f"清理临时标注视频失败 {output_path}: {cleanup_exc}")
     pass
