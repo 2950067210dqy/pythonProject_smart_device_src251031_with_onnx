@@ -1,14 +1,185 @@
 import os.path
+import time
+import zlib
 from pathlib import Path
 
-from PyQt6.QtCore import QUrl, QObject
+import cv2
+from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QFileDialog, QHBoxLayout, QWidget, QSlider, QLabel
 from loguru import logger
 
 from config.global_setting import global_setting
+from server.video_process import (
+    MOUSE_DETECTION_IOU_THRESHOLD,
+    _MouseTrackCounter,
+    _draw_mouse_count_label,
+    _extract_yolo_boxes,
+    _extract_yolo_track_ids,
+    _get_mouse_yolo_model,
+    get_mouse_detection_conf_threshold,
+    get_mouse_tracker_config,
+    get_mouse_use_ultralytics_tracker,
+)
 from theme.ThemeQt6 import ThemedWidget
+
+report_logger = logger.bind(category="report_logger")
+
+
+class _VideoDetectionWorker(QThread):
+    frame_ready = pyqtSignal(QImage)
+    position_changed = pyqtSignal(int)
+    duration_changed = pyqtSignal(int)
+    playback_finished = pyqtSignal(int, str)
+    playback_failed = pyqtSignal(str)
+
+    def __init__(self, video_path: str, output_path: str):
+        super().__init__()
+        self.video_path = video_path
+        self.output_path = output_path
+        self._running = True
+        self._paused = False
+        self._seek_ms = None
+
+    def run(self):
+        cap = None
+        writer = None
+        try:
+            model = _get_mouse_yolo_model()
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                self.playback_failed.emit(f"视频无法打开: {self.video_path}")
+                return
+
+            fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if width <= 0 or height <= 0:
+                self.playback_failed.emit(f"视频尺寸异常: {self.video_path}")
+                return
+
+            Path(self.output_path).parent.mkdir(parents=True, exist_ok=True)
+            writer = cv2.VideoWriter(
+                self.output_path,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                fps,
+                (width, height),
+            )
+            if not writer.isOpened():
+                self.playback_failed.emit(f"检测结果视频创建失败: {self.output_path}")
+                return
+
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            duration_ms = int(frame_count / fps * 1000) if frame_count > 0 else 0
+            self.duration_changed.emit(duration_ms)
+
+            # 修改：预览计数和后台报表使用同一套稳定轨迹计数器，减少遮挡/丢帧导致的重复计数。
+            mouse_counter = _MouseTrackCounter(fps=fps)
+            conf_threshold = get_mouse_detection_conf_threshold()
+            use_ultralytics_tracker = get_mouse_use_ultralytics_tracker()
+            tracker_config = get_mouse_tracker_config()
+            tracker_warning_logged = False
+
+            while self._running:
+                if self._paused:
+                    time.sleep(0.05)
+                    continue
+
+                if self._seek_ms is not None:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, self._seek_ms)
+                    self._seek_ms = None
+
+                frame_start = time.monotonic()
+                ok, frame = cap.read()
+                if not ok:
+                    break
+
+                # 修改：默认用 predict + 稳定轨迹计数器，避免 ByteTrack 的 scipy/lap 依赖异常。
+                if use_ultralytics_tracker:
+                    try:
+                        results = model.track(
+                            frame,
+                            persist=True,
+                            tracker=tracker_config,
+                            conf=conf_threshold,
+                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            verbose=False,
+                        )
+                    except Exception as exc:
+                        use_ultralytics_tracker = False
+                        if not tracker_warning_logged:
+                            logger.warning(f"YOLO track 不可用，视频预览切换到简易 IOU 跟踪: {exc}")
+                            tracker_warning_logged = True
+                        results = model.predict(
+                            frame,
+                            conf=conf_threshold,
+                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            verbose=False,
+                        )
+                else:
+                    results = model.predict(
+                        frame,
+                        conf=conf_threshold,
+                        iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                        verbose=False,
+                    )
+
+                result = results[0] if results else None
+                if result is None:
+                    annotated_frame = frame.copy()
+                else:
+                    detections = _extract_yolo_boxes(result)
+                    track_ids = _extract_yolo_track_ids(result)
+                    mouse_counter.update(detections, track_ids)
+                    # 修改：result.plot() 在部分环境会返回只读数组，复制后再用 OpenCV 叠加数量标签。
+                    annotated_frame = result.plot().copy()
+
+                _draw_mouse_count_label(annotated_frame, mouse_counter.count)
+                writer.write(annotated_frame)
+                self.frame_ready.emit(self._to_qimage(annotated_frame))
+
+                position_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC) or 0)
+                self.position_changed.emit(position_ms)
+
+                wait_seconds = max(0.0, (1.0 / fps) - (time.monotonic() - frame_start))
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+
+            if self._running:
+                self.playback_finished.emit(mouse_counter.count, self.output_path)
+        except Exception as exc:
+            self.playback_failed.emit(str(exc))
+        finally:
+            if writer is not None:
+                writer.release()
+            if cap is not None:
+                cap.release()
+
+    def pause(self):
+        self._paused = True
+
+    def resume(self):
+        self._paused = False
+
+    def stop(self):
+        self._running = False
+        self._paused = False
+
+    def seek(self, position_ms: int):
+        # 修改：保留进度条拖动能力，跳转后继续从新位置做检测播放。
+        self._seek_ms = max(0, int(position_ms))
+
+    @property
+    def paused(self):
+        return self._paused
+
+    @staticmethod
+    def _to_qimage(frame) -> QImage:
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channels = rgb_frame.shape
+        bytes_per_line = channels * width
+        return QImage(rgb_frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888).copy()
 
 
 class VideoPlayer(QObject):
@@ -26,21 +197,25 @@ class VideoPlayer(QObject):
 
         self.plainTextEdit = plainTextEdit
         self.video_path=""
+        self.default_path_text = "Path/to/file"
+        self.auto_report_after_preview = True
         # 记录播放总时长和现在时长
         self.video_all_duration =""
         self.video_now_duration=""
         # 创建视频播放器
         self.media_player = QMediaPlayer()
+        self.detection_worker = None
+        self._last_pixmap = None
 
         # 创建音频输出设备
         self.audio_output = QAudioOutput()
         self.media_player.setAudioOutput(self.audio_output)
 
-        # 创建视频显示组件
-        self.video_widget = QVideoWidget()
-        self.media_player.setVideoOutput(self.video_widget)
-
-
+        # 修改：视频显示组件改为 QLabel，用检测线程逐帧推送带框画面。
+        self.video_widget = QLabel()
+        self.video_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_widget.setMinimumSize(640, 360)
+        self.video_widget.setStyleSheet("background-color: black;")
 
         # 创建主布局
         self.parent_layout.addWidget(self.video_widget)
@@ -52,57 +227,18 @@ class VideoPlayer(QObject):
         self.video_widget.mousePressEvent = self.toggle_play_pause
         # 连接进度条信号
         self.video_slider.sliderMoved.connect(self.set_video_position)
-        self.media_player.positionChanged.connect(self.update_video_position)
-        self.media_player.durationChanged.connect(self.update_video_duration)
-        # 检测视频播放的当前播放状态事件
-        self.media_player.mediaStatusChanged.connect(self.on_media_status_changed)
         self.init_btn_function()
 
         pass
 
-    def on_media_status_changed(self, status):
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-
-            # 播放结束信号
-            print("播放结束信号")
-            # 接收数据线程与视频处理线程同步处理
-            with  global_setting.get_setting("condition_video"):
-                # 接收到了数据
-                global_setting.get_setting("data_buffer_video").append(self.video_path)
-                logger.debug(
-                    f"data_buffer - 加{self.video_path}-长度{len(global_setting.get_setting('data_buffer_video'))}")
-                # 如果所有线程都发送完数据，通知处理线程
-                # if len(global_setting.get_setting("data_buffer_video")) == int(
-                #         global_setting.get_setting("server_config")['Sender_SL']['device_nums']):
-                global_setting.get_setting("condition_video").notify()  # 通知处理线程开始处理
-                pass
-            self.stop_video()
-
-            pass
-        elif status ==QMediaPlayer.MediaStatus.NoMedia:
-            #没有媒体信号
-            print("没有媒体信号")
-            pass
-        elif status == QMediaPlayer.MediaStatus.LoadingMedia:
-            print("正在加载媒体")
-        elif status == QMediaPlayer.MediaStatus.LoadedMedia:
-            print("加载媒体完成")
-        elif status == QMediaPlayer.MediaStatus.StalledMedia:
-            print("媒体播放暂停")
-        elif status == QMediaPlayer.MediaStatus.BufferingMedia:
-            print("媒体播缓冲中")
-        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
-            print("媒体无效")
-        elif status == QMediaPlayer.MediaStatus.BufferedMedia:
-            print("媒体播缓冲结束")
-
     def toggle_play_pause(self, event):
-        if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+        if self.detection_worker is not None and not self.detection_worker.paused:
             self.stop_video()
         else:
             self.start_video()
     def set_video_position(self,position):
-        self.media_player.setPosition(position)
+        if self.detection_worker is not None:
+            self.detection_worker.seek(position)
         pass
     def update_video_position(self,position):
         self.video_slider.setValue(position)
@@ -140,26 +276,152 @@ class VideoPlayer(QObject):
             open_path.mkdir(parents=True, exist_ok=True)
             file_path, _ = QFileDialog.getOpenFileName(self.parent_frame, "打开视频文件", open_path.as_posix(), "视频文件 (*.mp4 *.avi *.mkv)")
             if file_path:
+                self._stop_detection_worker()
                 self.video_path = file_path
                 file_name = os.path.basename(file_path)
 
                 self.plainTextEdit.setPlainText(file_path)
                 global_setting.set_setting("choose_video_file_name", file_name)
-                # print(file_name)
-                self.media_player.setSource(QUrl.fromLocalFile(file_path))
-                self.start_video()
+                self._log_video_analysis_started(file_path)
+                self._start_detection_preview(file_path)
+
         except Exception as e:
             logger.error(f"打开视频文件错误：{e}")
+
+    def refresh_path_display(self):
+        # 修改：切换到鼠类视频页时，路径框显示当前视频路径；无视频则恢复默认路径提示。
+        if self.plainTextEdit is None:
+            return
+        self.plainTextEdit.setPlainText(self.video_path if self.video_path else self.default_path_text)
+
     def start_video(self):
         self.start_video_btn.setEnabled(False)
         self.stop_video_btn.setEnabled(True)
-        self.media_player.play()
+        if self.detection_worker is not None:
+            self.detection_worker.resume()
+        elif self.video_path:
+            self._start_detection_preview(self.video_path)
 
         pass
 
     def stop_video(self):
         self.start_video_btn.setEnabled(True)
         self.stop_video_btn.setEnabled(False)
-        self.media_player.pause()
+        if self.detection_worker is not None:
+            self.detection_worker.pause()
         pass
 
+    def _start_detection_preview(self, file_path: str):
+        # 修改：打开视频后立即启动检测播放，界面显示的是带检测框和累计数量的画面。
+        self.start_video_btn.setEnabled(False)
+        self.stop_video_btn.setEnabled(True)
+        self.video_slider.setValue(0)
+        self.video_now_duration = "00:00"
+        self.video_all_duration = "00:00"
+        self.display_duration()
+
+        output_path = self._build_annotated_preview_path(file_path)
+        self.detection_worker = _VideoDetectionWorker(file_path, str(output_path))
+        self.detection_worker.frame_ready.connect(self._show_detection_frame)
+        self.detection_worker.position_changed.connect(self.update_video_position)
+        self.detection_worker.duration_changed.connect(self.update_video_duration)
+        self.detection_worker.playback_finished.connect(self._on_detection_playback_finished)
+        self.detection_worker.playback_failed.connect(self._on_detection_playback_failed)
+        self.detection_worker.finished.connect(self._clear_detection_worker_reference)
+        self.detection_worker.finished.connect(self.detection_worker.deleteLater)
+        self.detection_worker.start()
+
+    def _show_detection_frame(self, image: QImage):
+        pixmap = QPixmap.fromImage(image)
+        self._last_pixmap = pixmap
+        if self.video_widget.width() > 0 and self.video_widget.height() > 0:
+            pixmap = pixmap.scaled(
+                self.video_widget.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        self.video_widget.setPixmap(pixmap)
+
+    def _on_detection_playback_finished(self, mouse_count: int, annotated_video_path: str):
+        logger.debug("检测视频播放结束")
+        # 修改：保留原有播放结束后通知后台视频处理线程的 processing_done 链路。
+        if self.auto_report_after_preview:
+            self._notify_video_process(mouse_count, annotated_video_path)
+        self.start_video_btn.setEnabled(True)
+        self.stop_video_btn.setEnabled(False)
+
+    def _on_detection_playback_failed(self, message: str):
+        logger.error(f"检测视频播放失败：{message}")
+        self.start_video_btn.setEnabled(True)
+        self.stop_video_btn.setEnabled(False)
+
+    def _notify_video_process(self, mouse_count: int, annotated_video_path: str):
+        # 修改：后台处理带框视频，并缓存预览阶段已得到的数量，video_handle 直接取数不重复识别。
+        condition_video = global_setting.get_setting("condition_video")
+        data_buffer_video = global_setting.get_setting("data_buffer_video")
+        if condition_video is None or data_buffer_video is None:
+            logger.error("视频处理同步对象未初始化，无法通知报表统计")
+            return
+
+        with condition_video:
+            annotated_key = str(Path(annotated_video_path).resolve())
+            detected_counts = global_setting.get_setting("video_detected_counts", {})
+            detected_counts[annotated_key] = int(mouse_count)
+            global_setting.set_setting("video_detected_counts", detected_counts)
+
+            device_codes = global_setting.get_setting("video_device_codes", {})
+            if not isinstance(device_codes, dict):
+                device_codes = {}
+            device_codes[annotated_key] = self._resolve_video_device_code(self.video_path)
+            global_setting.set_setting("video_device_codes", device_codes)
+
+            data_buffer_video.append(annotated_video_path)
+            logger.debug(f"data_buffer - 加{annotated_video_path}-长度{len(data_buffer_video)}")
+            condition_video.notify()
+
+    def _build_annotated_preview_path(self, file_path: str) -> Path:
+        server_cfg = global_setting.get_setting("server_config")
+        if server_cfg is not None:
+            base_dir = Path(server_cfg["Storage"]["fold_path"]) / server_cfg["Storage"]["video_path"]
+        else:
+            base_dir = Path(file_path).parent
+
+        output_dir = base_dir / "detected_preview"
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        source_path = Path(file_path)
+        return output_dir / f"{source_path.stem}_detected_{timestamp}.mp4"
+
+    def _log_video_analysis_started(self, file_path: str):
+        # 修改：选择鼠类视频后立即写入 reportlog，提示正在分析当前 SL 设备数据。
+        device_code = self._resolve_video_device_code(file_path)
+        device_codes = global_setting.get_setting("video_device_codes", {})
+        if not isinstance(device_codes, dict):
+            device_codes = {}
+        device_codes[str(Path(file_path).resolve())] = device_code
+        global_setting.set_setting("video_device_codes", device_codes)
+        report_logger.info(f"正在分析{device_code}数据")
+        done_event = global_setting.get_setting("processing_done")
+        if done_event is not None:
+            done_event.set()
+
+    @staticmethod
+    def _resolve_video_device_code(file_path: str) -> str:
+        stem = Path(file_path).stem
+        parts = stem.split("_")
+        if len(parts) >= 2 and parts[0].upper() == "SL" and parts[1].isdigit():
+            return f"SL_{parts[1][:6].zfill(6)}"
+
+        stable_id = zlib.crc32(stem.encode("utf-8")) % 1000000
+        return f"SL_{stable_id:06}"
+
+    def _stop_detection_worker(self):
+        if self.detection_worker is None:
+            return
+        self.detection_worker.stop()
+        self.detection_worker.wait(3000)
+        self._clear_detection_worker_reference()
+
+    def _clear_detection_worker_reference(self):
+        sender = self.sender()
+        if sender is None or sender == self.detection_worker:
+            self.detection_worker = None

@@ -1,12 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+tracker_hiddenimports = [
+    'lap',
+    'scipy',
+    'scipy.optimize',
+    'scipy.optimize._lsap',
+    'scipy.spatial',
+    'scipy.spatial.distance',
+    'scipy.spatial._distance_pybind',
+    'scipy.spatial._distance_wrap',
+    'ultralytics.trackers',
+    'ultralytics.trackers.byte_tracker',
+    'ultralytics.trackers.bot_sort',
+    'ultralytics.trackers.track',
+    'ultralytics.trackers.utils.matching',
+]
+
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=tracker_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

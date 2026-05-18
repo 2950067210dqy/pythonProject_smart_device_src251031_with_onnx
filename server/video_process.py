@@ -4,6 +4,7 @@ import random
 import shutil
 import sys
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,6 +20,15 @@ report_logger = logger.bind(category="report_logger")
 
 # 修改：视频端使用 models/best.pt 做老鼠检测，模型按需加载并缓存，避免每个视频重复加载。
 _MOUSE_YOLO_MODEL: Optional[Any] = None
+# 修改：提高老鼠检测置信度阈值，过滤低置信度框，降低误检和重复计数概率。
+MOUSE_DETECTION_CONF_THRESHOLD = 0.25
+MOUSE_DETECTION_IOU_THRESHOLD = 0.45
+MOUSE_TRACK_CONFIRM_FRAMES =2
+# 修改：默认启用 Ultralytics 内置 tracker，实际开关从 server_config.ini 的 Video_Process 读取。
+MOUSE_USE_ULTRALYTICS_TRACKER = True
+MOUSE_TRACKER_CONFIG = "bytetrack.yaml"
+_TRACKER_DEPS_READY: Optional[bool] = None
+_TRACKER_DEPS_WARNING_LOGGED = False
 
 
 def _get_bundle_root() -> Path:
@@ -64,8 +74,89 @@ def _get_mouse_yolo_model() -> Any:
     if not model_path.exists():
         raise FileNotFoundError(f"老鼠检测模型不存在: {model_path}")
 
+    # # 修改：加载前先校验 pt 权重是否完整，避免 PyTorch 抛出晦涩的 zip/multidisk 底层错误。
+    # try:
+    #     if model_path.read_bytes()[:2] == b"PK":
+    #         with zipfile.ZipFile(model_path) as checkpoint_zip:
+    #             bad_file = checkpoint_zip.testzip()
+    #             if bad_file is not None:
+    #                 raise RuntimeError(f"模型压缩包内文件损坏: {bad_file}")
+    # except zipfile.BadZipFile as exc:
+    #     raise RuntimeError(f"老鼠检测模型文件损坏，请重新复制完整的 best.pt: {model_path}") from exc
+
     _MOUSE_YOLO_MODEL = YOLO(str(model_path))
     return _MOUSE_YOLO_MODEL
+
+
+def get_mouse_detection_conf_threshold() -> float:
+    """Read mouse detection confidence threshold from server_config.ini."""
+
+    try:
+        server_cfg = global_setting.get_setting("server_config")
+        if server_cfg is not None:
+            conf = float(server_cfg["Video_Process"].get("conf_threshold", MOUSE_DETECTION_CONF_THRESHOLD))
+            return min(1.0, max(0.0, conf))
+    except Exception as exc:
+        logger.warning(f"读取视频检测置信度阈值失败，使用默认值 {MOUSE_DETECTION_CONF_THRESHOLD}: {exc}")
+    return MOUSE_DETECTION_CONF_THRESHOLD
+
+
+def get_mouse_use_ultralytics_tracker() -> bool:
+    """Read whether to use Ultralytics tracker from server_config.ini."""
+
+    try:
+        server_cfg = global_setting.get_setting("server_config")
+        if server_cfg is None:
+            return MOUSE_USE_ULTRALYTICS_TRACKER
+        raw_value = str(
+            server_cfg["Video_Process"].get(
+                "use_ultralytics_tracker",
+                "1" if MOUSE_USE_ULTRALYTICS_TRACKER else "0",
+            )
+        ).strip().lower()
+        if raw_value in {"1", "true", "yes", "on"}:
+            return _ultralytics_tracker_deps_ready()
+        if raw_value in {"0", "false", "no", "off"}:
+            return False
+    except Exception as exc:
+        logger.warning(f"读取视频跟踪器开关失败，使用默认值 {MOUSE_USE_ULTRALYTICS_TRACKER}: {exc}")
+    return MOUSE_USE_ULTRALYTICS_TRACKER and _ultralytics_tracker_deps_ready()
+
+
+def get_mouse_tracker_config() -> str:
+    """Read Ultralytics tracker yaml from server_config.ini."""
+
+    try:
+        server_cfg = global_setting.get_setting("server_config")
+        if server_cfg is not None:
+            tracker = str(server_cfg["Video_Process"].get("tracker", MOUSE_TRACKER_CONFIG)).strip()
+            if tracker:
+                return tracker
+    except Exception as exc:
+        logger.warning(f"读取视频跟踪器配置失败，使用默认值 {MOUSE_TRACKER_CONFIG}: {exc}")
+    return MOUSE_TRACKER_CONFIG
+
+
+def _ultralytics_tracker_deps_ready() -> bool:
+    """Check tracker dependencies once, so PyInstaller scipy issues fall back quietly."""
+
+    global _TRACKER_DEPS_READY, _TRACKER_DEPS_WARNING_LOGGED
+    if _TRACKER_DEPS_READY is not None:
+        return _TRACKER_DEPS_READY
+
+    try:
+        from scipy.optimize import linear_sum_assignment  # noqa: F401
+        from scipy.spatial.distance import cdist  # noqa: F401
+        import lap  # noqa: F401
+
+        _TRACKER_DEPS_READY = True
+    except Exception as exc:
+        _TRACKER_DEPS_READY = False
+        if not _TRACKER_DEPS_WARNING_LOGGED:
+            logger.warning(f"Ultralytics ByteTrack 依赖不可用，自动退回内置稳定计数器: {exc}")
+            _TRACKER_DEPS_WARNING_LOGGED = True
+
+    return _TRACKER_DEPS_READY
 
 
 def _box_iou(box_a: Tuple[float, float, float, float], box_b: Tuple[float, float, float, float]) -> float:
@@ -94,6 +185,142 @@ def _extract_yolo_boxes(result: Any) -> List[Tuple[float, float, float, float]]:
     if xyxy is None:
         return []
     return [tuple(map(float, box)) for box in xyxy.detach().cpu().tolist()]
+
+
+def _extract_yolo_track_ids(result: Any) -> List[Optional[int]]:
+    """Extract track ids from an Ultralytics result, preserving detection order."""
+
+    boxes = getattr(result, "boxes", None)
+    track_ids = getattr(boxes, "id", None) if boxes is not None else None
+    box_count = len(_extract_yolo_boxes(result))
+    if track_ids is None:
+        return [None] * box_count
+    return [int(track_id) for track_id in track_ids.detach().cpu().tolist()]
+
+
+def _box_center(box: Tuple[float, float, float, float]) -> Tuple[float, float]:
+    x1, y1, x2, y2 = box
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+def _box_diag(box: Tuple[float, float, float, float]) -> float:
+    x1, y1, x2, y2 = box
+    return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+
+
+def _draw_mouse_count_label(frame: Any, mouse_count: int) -> None:
+    """Draw current stable mouse count on an annotated video frame."""
+
+    label = f"Mouse Count: {mouse_count}"
+    cv2.rectangle(frame, (12, 12), (285, 58), (0, 0, 0), -1)
+    cv2.putText(frame, label, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
+
+
+class _MouseTrackCounter:
+    """Count stable mouse identities while merging short tracking id breaks."""
+
+    def __init__(
+        self,
+        fps: float,
+        confirm_frames: int = MOUSE_TRACK_CONFIRM_FRAMES,
+        max_gap_seconds: float = 2.0,
+        merge_iou_threshold: float = 0.15,
+    ) -> None:
+        self.confirm_frames = confirm_frames
+        self.max_gap_frames = max(confirm_frames, int(max_gap_seconds * max(fps, 1.0)))
+        self.merge_iou_threshold = merge_iou_threshold
+        self.frame_index = 0
+        self.next_entity_id = 1
+        self.track_to_entity: Dict[int, int] = {}
+        self.entities: Dict[int, Dict[str, Any]] = {}
+
+    def update(
+        self,
+        detections: List[Tuple[float, float, float, float]],
+        track_ids: Optional[List[Optional[int]]] = None,
+    ) -> int:
+        self.frame_index += 1
+        track_ids = track_ids or [None] * len(detections)
+        updated_entities = set()
+
+        for box, track_id in zip(detections, track_ids):
+            entity_id = self._resolve_entity(box, track_id, updated_entities)
+            entity = self.entities[entity_id]
+            entity["box"] = box
+            entity["last_frame"] = self.frame_index
+            entity["hits"] += 1
+            if entity["hits"] >= self.confirm_frames:
+                entity["confirmed"] = True
+            updated_entities.add(entity_id)
+            if track_id is not None:
+                self.track_to_entity[int(track_id)] = entity_id
+
+        return self.count
+
+    @property
+    def count(self) -> int:
+        return sum(1 for entity in self.entities.values() if entity["confirmed"])
+
+    def _resolve_entity(
+        self,
+        box: Tuple[float, float, float, float],
+        track_id: Optional[int],
+        updated_entities: set,
+    ) -> int:
+        if track_id is not None:
+            mapped_entity = self.track_to_entity.get(int(track_id))
+            if mapped_entity is not None:
+                return mapped_entity
+
+        matched_entity = self._find_recent_entity(box, updated_entities)
+        if matched_entity is not None:
+            return matched_entity
+
+        entity_id = self.next_entity_id
+        self.next_entity_id += 1
+        self.entities[entity_id] = {
+            "box": box,
+            "hits": 0,
+            "last_frame": self.frame_index,
+            "confirmed": False,
+        }
+        return entity_id
+
+    def _find_recent_entity(
+        self,
+        box: Tuple[float, float, float, float],
+        updated_entities: set,
+    ) -> Optional[int]:
+        best_entity_id = None
+        best_score = 0.0
+        cx, cy = _box_center(box)
+        diag = max(_box_diag(box), 1.0)
+
+        for entity_id, entity in self.entities.items():
+            if entity_id in updated_entities:
+                continue
+            frame_gap = self.frame_index - entity["last_frame"]
+            if frame_gap > self.max_gap_frames:
+                continue
+
+            previous_box = entity["box"]
+            iou = _box_iou(previous_box, box)
+            px, py = _box_center(previous_box)
+            center_distance = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+            distance_limit = max(50.0, diag * 0.8)
+
+            if iou >= self.merge_iou_threshold:
+                score = 2.0 + iou
+            elif center_distance <= distance_limit:
+                score = 1.0 - (center_distance / distance_limit)
+            else:
+                continue
+
+            if score > best_score:
+                best_score = score
+                best_entity_id = entity_id
+
+        return best_entity_id
 
 
 class _SimpleMouseTracker:
@@ -263,9 +490,12 @@ class Video_process(QThread):
                         # 将缓冲视频复制到 temp 目录作为处理输入
                         for video_path in global_setting.get_setting("data_buffer_video"):
                             try:
-                                random_device = random.randint(1,999999)
-                                shutil.copy(video_path,
-                                            self.path + self.type + "_" + self.temp_folder+"/"+f"{self.type}_{random_device:06}_{time_util.get_format_file_from_time_no_millSecond(time.time())}.{video_path.split('.')[-1]}")
+                                device_number = self._resolve_buffer_video_device_number(video_path)
+                                target_path = Path(
+                                    self.path + self.type + "_" + self.temp_folder
+                                ) / f"{self.type}_{device_number}_{time_util.get_format_file_from_time_no_millSecond(time.time())}.{video_path.split('.')[-1]}"
+                                shutil.copy(video_path, str(target_path))
+                                self._carry_preview_count_to_temp(video_path, target_path)
                             except Exception as e:
                                 logger.error(f"[VideoCopy] 复制失败 {video_path}: {e}")
                         self.Video_Processing()
@@ -281,6 +511,40 @@ class Video_process(QThread):
                 time.sleep(float(global_setting.get_setting("server_config")['Video_Process']['delay']))
 
         pass
+
+    def _resolve_buffer_video_device_number(self, source_video_path: str) -> str:
+        """沿用播放器开始分析时写入的 SL 编号，避免开始/完成日志设备名不一致。"""
+
+        device_codes = global_setting.get_setting("video_device_codes", {})
+        if isinstance(device_codes, dict):
+            source_key = str(Path(source_video_path).resolve())
+            device_code = device_codes.pop(source_key, None)
+            global_setting.set_setting("video_device_codes", device_codes)
+            if isinstance(device_code, str) and device_code.upper().startswith(f"{self.type}_"):
+                number = device_code.split("_", 1)[1]
+                if number.isdigit():
+                    return number[:6].zfill(6)
+
+        return f"{random.randint(1, 999999):06}"
+
+    def _carry_preview_count_to_temp(self, source_video_path: str, target_path: Path) -> None:
+        """把播放器预览阶段得到的数量转移到 temp 文件名，供 video_handle 直接读取。"""
+
+        detected_counts = global_setting.get_setting("video_detected_counts", {})
+        if not isinstance(detected_counts, dict):
+            detected_counts = {}
+
+        source_key = str(Path(source_video_path).resolve())
+        preview_count = detected_counts.pop(source_key, None)
+        if preview_count is None:
+            global_setting.set_setting("video_detected_counts", detected_counts)
+            return
+
+        # 修改：后台处理的是复制后的临时文件名，所以把已识别数量同时挂到临时文件名和完整路径上。
+        detected_counts[str(target_path.resolve())] = int(preview_count)
+        detected_counts[target_path.name] = int(preview_count)
+        global_setting.set_setting("video_detected_counts", detected_counts)
+
     def Video_Processing(self):
         # 1.寻找temp文件夹中的视频
         videos = self.get_video_files()
@@ -311,7 +575,10 @@ class Video_process(QThread):
             self.data_save.update_data(date, time_single, name, nums)
             report_logger.info(f"完成 {name}数据分析 -> {nums} (mouse)")
             # 3.归档
-            shutil.move(self.path +video.split('_')[0]+"_"+ self.temp_folder + video, self.path +video.split('_')[0]+"_"+self.record_folder)
+            try:
+                shutil.move(self.path +video.split('_')[0]+"_"+ self.temp_folder + video, self.path +video.split('_')[0]+"_"+self.record_folder)
+            except:
+                logger.info(f"{name}数据已经归档")
         self.data_save.csv_close()
     def video_handle(self,video_path):
         """
@@ -329,6 +596,12 @@ class Video_process(QThread):
             temp_dir = Path(self.path) / f"{type_code}_{temp_folder_name}"
             video_full_path = temp_dir / video_path
             logger.info(f"处理数据 {video_full_path}")
+
+            preview_count = self._consume_preview_count(video_path, video_full_path)
+            if preview_count is not None:
+                # 修改：播放器预览过程中已经完成识别计数，这里直接返回数量，避免重复 YOLO 推理。
+                logger.info(f"{video_path} 使用预览阶段识别数量: {preview_count}")
+                return preview_count
 
             model = _get_mouse_yolo_model()
             cap = cv2.VideoCapture(str(video_full_path))
@@ -351,10 +624,11 @@ class Video_process(QThread):
                 report_logger.error(f"{video_path}标注视频创建失败")
                 return 0
 
-            unique_track_ids = set()
-            fallback_tracker = _SimpleMouseTracker(max_missed=max(15, int(fps * 2)))
-            used_yolo_track_ids = False
-            use_ultralytics_tracker = True
+            # 修改：用稳定轨迹计数器替代“见过几个 track_id”，可合并短暂丢失后重新分配的 ID。
+            mouse_counter = _MouseTrackCounter(fps=fps)
+            conf_threshold = get_mouse_detection_conf_threshold()
+            use_ultralytics_tracker = get_mouse_use_ultralytics_tracker()
+            tracker_config = get_mouse_tracker_config()
             tracker_warning_logged = False
 
             while True:
@@ -362,37 +636,51 @@ class Video_process(QThread):
                 if not ok:
                     break
 
-                # 修改：优先使用 Ultralytics 内置 track 的持久 ID，避免同一只老鼠跨帧重复计数。
+                # 修改：默认用 predict + 稳定轨迹计数器，避免 ByteTrack 的 scipy/lap 依赖异常。
                 if use_ultralytics_tracker:
                     try:
-                        results = model.track(frame, persist=True, conf=0.25, iou=0.5, verbose=False)
+                        results = model.track(
+                            frame,
+                            persist=True,
+                            tracker=tracker_config,
+                            conf=conf_threshold,
+                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            verbose=False,
+                        )
                     except Exception as exc:
                         use_ultralytics_tracker = False
                         if not tracker_warning_logged:
                             report_logger.warning(f"YOLO track 不可用，切换到简易 IOU 跟踪: {exc}")
                             tracker_warning_logged = True
-                        results = model.predict(frame, conf=0.25, iou=0.5, verbose=False)
+                        results = model.predict(
+                            frame,
+                            conf=conf_threshold,
+                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            verbose=False,
+                        )
                 else:
-                    results = model.predict(frame, conf=0.25, iou=0.5, verbose=False)
+                    results = model.predict(
+                        frame,
+                        conf=conf_threshold,
+                        iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                        verbose=False,
+                    )
 
                 result = results[0] if results else None
                 if result is None:
                     writer.write(frame)
                     continue
 
-                boxes = getattr(result, "boxes", None)
-                track_ids = getattr(boxes, "id", None) if boxes is not None else None
-                if track_ids is not None:
-                    used_yolo_track_ids = True
-                    for track_id in track_ids.detach().cpu().tolist():
-                        unique_track_ids.add(int(track_id))
-                else:
-                    fallback_tracker.update(_extract_yolo_boxes(result))
+                detections = _extract_yolo_boxes(result)
+                track_ids = _extract_yolo_track_ids(result)
+                mouse_counter.update(detections, track_ids)
 
-                annotated_frame = result.plot()
+                # 修改：result.plot() 在部分环境会返回只读数组，复制后再用 OpenCV 叠加数量标签。
+                annotated_frame = result.plot().copy()
+                _draw_mouse_count_label(annotated_frame, mouse_counter.count)
                 writer.write(annotated_frame)
 
-            mouse_count = len(unique_track_ids) if used_yolo_track_ids else fallback_tracker.count
+            mouse_count = mouse_counter.count
             logger.info(f"{video_path} 老鼠独立个体统计: {mouse_count}")
 
             cap.release()
@@ -415,4 +703,22 @@ class Video_process(QThread):
                     output_path.unlink()
                 except Exception as cleanup_exc:
                     report_logger.warning(f"清理临时标注视频失败 {output_path}: {cleanup_exc}")
+
+    def _consume_preview_count(self, video_name: str, video_full_path: Path) -> Optional[int]:
+        """读取并移除播放器预览阶段缓存的鼠类数量。"""
+
+        detected_counts = global_setting.get_setting("video_detected_counts", {})
+        if not isinstance(detected_counts, dict):
+            return None
+
+        keys = (str(video_full_path.resolve()), video_name)
+        for key in keys:
+            if key in detected_counts:
+                value = int(detected_counts[key])
+                for cleanup_key in keys:
+                    detected_counts.pop(cleanup_key, None)
+                global_setting.set_setting("video_detected_counts", detected_counts)
+                return value
+
+        return None
     pass

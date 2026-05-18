@@ -36,21 +36,14 @@ class Data_thread(QThread):
             logger.warning(f"未能读取 Image_Process.delay，采用默认间隔 1s，原因: {e}")
             self.delay_seconds = 1.0
         self.auto_refresh_interval = 30.0
-        self._running = False
         pass
 
 
     def run(self):
         refresh_event = global_setting.get_setting("processing_done")
-        self._running = True
-        while self._running:
-            triggered = False
-            if refresh_event is not None:
-                triggered = refresh_event.wait(timeout=self.auto_refresh_interval)
-            else:
-                time.sleep(self.auto_refresh_interval)
-            if not self._running:
-                break
+        while True:
+            # 等待图像处理线程处理完在运行；若超过 auto_refresh_interval 秒未更新，则触发定时刷新
+            triggered = refresh_event.wait(timeout=self.auto_refresh_interval)
             if triggered:
                 logger.debug("新图像，更新图表数据中")
             else:
@@ -69,20 +62,13 @@ class Data_thread(QThread):
             except Exception as e:
                 logger.error(f"刷新图表数据失败: {e}")
             finally:
-                if triggered and self._running and refresh_event is not None:
+                if triggered:
                     refresh_event.clear()  # 清除事件以供下次使用
-            if not self._running:
-                break
             time.sleep(self.delay_seconds)
+            # time.sleep(1)
         pass
 
     pass
-
-    def stop(self):
-        self._running = False
-        refresh_event = global_setting.get_setting("processing_done")
-        if refresh_event is not None:
-            refresh_event.set()
 
 # 创建柱状图
 class BarChartApp(ThemedWidget):
@@ -277,11 +263,6 @@ class BarChartApp(ThemedWidget):
         self.data_thread = Data_thread(update_status_main_signal=self.update_data_main_signal_gui_update)
         logger.info("charts data update thread start")
         self.data_thread.start()
-        chart_threads = global_setting.get_setting("chart_threads")
-        if chart_threads is None:
-            global_setting.set_setting("chart_threads", [self.data_thread])
-        else:
-            chart_threads.append(self.data_thread)
 
     def get_data(self,data):
 

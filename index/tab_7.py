@@ -8,7 +8,7 @@ from config.global_setting import global_setting
 from PyQt6 import QtCore
 from PyQt6.QtCore import QRect, QThread, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QMainWindow, QTextBrowser, QVBoxLayout, QScrollArea, QPushButton, QHBoxLayout, \
-    QTextEdit, QPlainTextEdit, QSlider, QLabel, QStackedWidget, QComboBox
+    QTextEdit, QPlainTextEdit, QSlider, QLabel, QStackedWidget, QComboBox, QSizePolicy
 
 from theme.ThemeQt6 import ThemedWidget
 from ui.custom_ui.BarChart import BarChartApp
@@ -207,8 +207,26 @@ class Tab_7(ThemedWidget):
         except Exception as e:
             logger.debug(f"[Tab7] setStretch runtime adjust failed: {e}")
 
+        self._adjust_path_display_height()
         self._retranslateUi()
         pass
+
+    def _adjust_path_display_height(self):
+        """放大文件路径显示区域，避免长路径在高度过小时显示不完整。"""
+
+        try:
+            scroll_area: QScrollArea = self.frame.findChild(QScrollArea, "scrollArea_path")
+            path_display: QPlainTextEdit = self.frame.findChild(QPlainTextEdit, "plainTextEdit")
+            if scroll_area is not None:
+                # 修改：原 UI 最大高度为 70，路径框偏矮；运行时提高高度，避免编辑生成文件。
+                scroll_area.setMinimumHeight(84)
+                scroll_area.setMaximumHeight(120)
+                scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            if path_display is not None:
+                path_display.setMinimumHeight(72)
+                path_display.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        except Exception as e:
+            logger.debug(f"[Tab7] adjust path display height failed: {e}")
 
     # 实例化自定义ui
     def _init_customize_ui(self):
@@ -316,6 +334,9 @@ class Tab_7(ThemedWidget):
     def show_video_page(self):
         if self.media_stack is not None and self.video_page is not None:
             self.media_stack.setCurrentWidget(self.video_page)
+        # 修改：切换到鼠类页时刷新路径框，显示视频路径；没有视频时显示默认 Path/to/file。
+        if self.video_component is not None:
+            self.video_component.refresh_path_display()
 
     @staticmethod
     def _map_label_to_device(label: str) -> str:
