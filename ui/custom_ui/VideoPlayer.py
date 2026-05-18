@@ -12,19 +12,33 @@ from loguru import logger
 
 from config.global_setting import global_setting
 from server.video_process import (
-    MOUSE_DETECTION_IOU_THRESHOLD,
     _MouseTrackCounter,
     _draw_mouse_count_label,
     _extract_yolo_boxes,
     _extract_yolo_track_ids,
     _get_mouse_yolo_model,
     get_mouse_detection_conf_threshold,
+    get_mouse_detection_iou_threshold,
     get_mouse_tracker_config,
     get_mouse_use_ultralytics_tracker,
+    warmup_mouse_yolo_model,
 )
 from theme.ThemeQt6 import ThemedWidget
 
 report_logger = logger.bind(category="report_logger")
+
+
+# 修改：软件启动时用后台线程预加载鼠类 YOLO 模型，避免阻塞主界面。
+class _MouseModelWarmupWorker(QThread):
+    warmup_finished = pyqtSignal()
+    warmup_failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            warmup_mouse_yolo_model()
+            self.warmup_finished.emit()
+        except Exception as exc:
+            self.warmup_failed.emit(str(exc))
 
 
 class _VideoDetectionWorker(QThread):
@@ -77,9 +91,12 @@ class _VideoDetectionWorker(QThread):
             # 修改：预览计数和后台报表使用同一套稳定轨迹计数器，减少遮挡/丢帧导致的重复计数。
             mouse_counter = _MouseTrackCounter(fps=fps)
             conf_threshold = get_mouse_detection_conf_threshold()
+            iou_threshold = get_mouse_detection_iou_threshold()
             use_ultralytics_tracker = get_mouse_use_ultralytics_tracker()
             tracker_config = get_mouse_tracker_config()
             tracker_warning_logged = False
+            # 修改：记录已经参与计数的最大帧号，拖动进度条回看旧帧时只显示检测框，不重复累计数量。
+            counted_frame_watermark = 0
 
             while self._running:
                 if self._paused:
@@ -95,15 +112,20 @@ class _VideoDetectionWorker(QThread):
                 if not ok:
                     break
 
+                frame_number = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+                if frame_number <= 0:
+                    frame_number = counted_frame_watermark + 1
+                should_count_frame = frame_number > counted_frame_watermark
+
                 # 修改：默认用 predict + 稳定轨迹计数器，避免 ByteTrack 的 scipy/lap 依赖异常。
-                if use_ultralytics_tracker:
+                if use_ultralytics_tracker and should_count_frame:
                     try:
                         results = model.track(
                             frame,
                             persist=True,
                             tracker=tracker_config,
                             conf=conf_threshold,
-                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            iou=iou_threshold,
                             verbose=False,
                         )
                     except Exception as exc:
@@ -114,14 +136,14 @@ class _VideoDetectionWorker(QThread):
                         results = model.predict(
                             frame,
                             conf=conf_threshold,
-                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            iou=iou_threshold,
                             verbose=False,
                         )
                 else:
                     results = model.predict(
                         frame,
                         conf=conf_threshold,
-                        iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                        iou=iou_threshold,
                         verbose=False,
                     )
 
@@ -131,12 +153,16 @@ class _VideoDetectionWorker(QThread):
                 else:
                     detections = _extract_yolo_boxes(result)
                     track_ids = _extract_yolo_track_ids(result)
-                    mouse_counter.update(detections, track_ids)
+                    if should_count_frame:
+                        mouse_counter.update(detections, track_ids)
                     # 修改：result.plot() 在部分环境会返回只读数组，复制后再用 OpenCV 叠加数量标签。
                     annotated_frame = result.plot().copy()
 
+                if should_count_frame:
+                    counted_frame_watermark = frame_number
                 _draw_mouse_count_label(annotated_frame, mouse_counter.count)
-                writer.write(annotated_frame)
+                if should_count_frame:
+                    writer.write(annotated_frame)
                 self.frame_ready.emit(self._to_qimage(annotated_frame))
 
                 position_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC) or 0)
@@ -205,6 +231,8 @@ class VideoPlayer(QObject):
         # 创建视频播放器
         self.media_player = QMediaPlayer()
         self.detection_worker = None
+        self.model_warmup_worker = None
+        self.mouse_model_ready = False
         self._last_pixmap = None
 
         # 创建音频输出设备
@@ -221,6 +249,7 @@ class VideoPlayer(QObject):
         self.parent_layout.addWidget(self.video_widget)
 
         self.init_function()
+        self._start_mouse_model_warmup()
 
     def init_function(self):
         # 单击视频暂停/播放的功能
@@ -315,6 +344,7 @@ class VideoPlayer(QObject):
         # 修改：打开视频后立即启动检测播放，界面显示的是带检测框和累计数量的画面。
         self.start_video_btn.setEnabled(False)
         self.stop_video_btn.setEnabled(True)
+        self._show_loading_model_message()
         self.video_slider.setValue(0)
         self.video_now_duration = "00:00"
         self.video_all_duration = "00:00"
@@ -330,6 +360,36 @@ class VideoPlayer(QObject):
         self.detection_worker.finished.connect(self._clear_detection_worker_reference)
         self.detection_worker.finished.connect(self.detection_worker.deleteLater)
         self.detection_worker.start()
+
+    def _start_mouse_model_warmup(self):
+        # 修改：软件打开后后台预加载鼠类 YOLO 模型，减少第一次打开视频时的等待。
+        if self.model_warmup_worker is not None or self.mouse_model_ready:
+            return
+
+        self.model_warmup_worker = _MouseModelWarmupWorker()
+        self.model_warmup_worker.warmup_finished.connect(self._on_mouse_model_warmup_finished)
+        self.model_warmup_worker.warmup_failed.connect(self._on_mouse_model_warmup_failed)
+        self.model_warmup_worker.finished.connect(self._clear_model_warmup_worker_reference)
+        self.model_warmup_worker.finished.connect(self.model_warmup_worker.deleteLater)
+        self.model_warmup_worker.start()
+
+    def _on_mouse_model_warmup_finished(self):
+        self.mouse_model_ready = True
+        logger.info("鼠类 YOLO 模型预加载完成")
+
+    def _on_mouse_model_warmup_failed(self, message: str):
+        logger.error(f"鼠类 YOLO 模型预加载失败：{message}")
+
+    def _clear_model_warmup_worker_reference(self):
+        sender = self.sender()
+        if sender is None or sender == self.model_warmup_worker:
+            self.model_warmup_worker = None
+
+    def _show_loading_model_message(self):
+        # 修改：第一帧检测画面出来前，视频区域显示模型加载提示。
+        self.video_widget.clear()
+        self.video_widget.setText("正在加载模型中...")
+        self.video_widget.setStyleSheet("background-color: black; color: white; font-size: 16pt;")
 
     def _show_detection_frame(self, image: QImage):
         pixmap = QPixmap.fromImage(image)

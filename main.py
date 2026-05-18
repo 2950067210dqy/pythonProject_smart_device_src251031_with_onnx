@@ -8,8 +8,8 @@ from itertools import chain
 from pathlib import Path
 
 import psutil
-from PyQt6.QtCore import QThreadPool
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QThread, QThreadPool, QTimer, Qt, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QProgressBar, QVBoxLayout
 from loguru import logger
 
 
@@ -23,7 +23,7 @@ from server.image_process import Img_process, report_writing  # immediate report
 import threading as _threading  # for lock
 from server.sender import Sender
 from server.server import Server
-from server.video_process import Video_process
+from server.video_process import Video_process, warmup_mouse_yolo_model
 from theme.ThemeManager import ThemeManager
 
 
@@ -36,6 +36,151 @@ server_thread=None
 image_process_thread=None
 video_process_thread=None
 log_sink_ids = []
+
+
+# 修改：启动主界面前用独立线程加载鼠类 YOLO 模型，避免界面显示后首次使用才卡顿。
+class MouseModelStartupLoader(QThread):
+    load_finished = pyqtSignal()
+    load_failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            warmup_mouse_yolo_model()
+            self.load_finished.emit()
+        except Exception as exc:
+            self.load_failed.emit(str(exc))
+
+
+# 修改：模型加载弹窗不提供关闭按钮，加载完成后自动显示“已完成”并进入主程序。
+class MouseModelLoadingDialog(QDialog):
+    def __init__(self, on_startup_ready=None):
+        super().__init__()
+        self._progress_value = 0
+        self._progress_cap = 30
+        self._mouse_stage_visible = False
+        self._mouse_model_loaded = False
+        self._mouse_model_error = ""
+        self._main_window_shown = False
+        self._closing_after_progress = False
+        self._on_startup_ready = on_startup_ready
+        self.startup_error = None
+        self._loader = MouseModelStartupLoader(self)
+        self._timer = QTimer(self)
+
+        self.setWindowTitle("正在加载模型")
+        self.setModal(True)
+        self.setFixedSize(360, 120)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.CustomizeWindowHint
+            | Qt.WindowType.WindowTitleHint
+        )
+
+        self.label = QLabel("正在加载蜚蠊模型")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.label)
+        layout.addWidget(self.progress_bar)
+
+        self._timer.timeout.connect(self._advance_progress)
+        self._loader.load_finished.connect(self._on_load_finished)
+        self._loader.load_failed.connect(self._on_load_failed)
+
+    def start(self):
+        # 修改：显示顺序仍是蜚蠊、蝇类、鼠类，但鼠类 YOLO 模型从弹窗打开时就后台加载。
+        self._progress_value = 0
+        self._progress_cap = 30
+        self._mouse_stage_visible = False
+        self._mouse_model_loaded = False
+        self._mouse_model_error = ""
+        self._main_window_shown = False
+        self._closing_after_progress = False
+        self.label.setText("正在加载蜚蠊模型")
+        self.progress_bar.setValue(0)
+        self._timer.start(80)
+        self._loader.start()
+        QTimer.singleShot(700, self._show_fly_stage)
+        self.exec()
+
+    def reject(self):
+        # 修改：禁止用户手动关闭加载弹窗，防止模型未加载完就进入主界面。
+        if self.progress_bar.value() >= 100:
+            super().reject()
+
+    def closeEvent(self, event):
+        if self.progress_bar.value() < 100:
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def _advance_progress(self):
+        if self._progress_value < self._progress_cap:
+            self._progress_value += 1
+            self.progress_bar.setValue(self._progress_value)
+            if self._closing_after_progress and self._progress_value >= 100:
+                self._timer.stop()
+                self.label.setText("已完成")
+                QTimer.singleShot(300, self.accept)
+
+    def _show_fly_stage(self):
+        # 修改：蝇类模型加载阶段仅显示提示，不实际加载模型。
+        self._progress_value = max(self._progress_value, 30)
+        self._progress_cap = 60
+        self.progress_bar.setValue(self._progress_value)
+        self.label.setText("正在加载蝇类模型")
+        QTimer.singleShot(700, self._show_mouse_stage)
+
+    def _show_mouse_stage(self):
+        # 修改：进入鼠类模型显示阶段；如果后台已经加载完，则直接显示完成。
+        self._progress_value = max(self._progress_value, 60)
+        self._progress_cap = 95
+        self._mouse_stage_visible = True
+        self.progress_bar.setValue(self._progress_value)
+        self.label.setText("正在加载鼠类模型...")
+        if self._mouse_model_error:
+            self._on_load_failed(self._mouse_model_error)
+        elif self._mouse_model_loaded:
+            self._on_load_finished()
+
+    def _on_load_finished(self):
+        if not self._mouse_stage_visible:
+            self._mouse_model_loaded = True
+            return
+
+        # 修改：模型加载完后进度最多先走到 99%，主窗口显示后再慢慢走到 100%。
+        self._progress_cap = 99
+        self.label.setText("正在打开程序...")
+        if not self._timer.isActive():
+            self._timer.start(80)
+        QTimer.singleShot(500, self._show_main_window_then_finish)
+
+    def _show_main_window_then_finish(self):
+        # 修改：模型加载完成后先创建并显示主窗口，再让进度条继续到 100% 后关闭弹窗。
+        try:
+            if self._on_startup_ready is not None:
+                self._on_startup_ready()
+            self._main_window_shown = True
+            self._closing_after_progress = True
+            self._progress_cap = 100
+            if not self._timer.isActive():
+                self._timer.start(80)
+        except Exception as exc:
+            self.startup_error = exc
+            logger.error(f"主窗口显示失败：{exc}")
+            self.reject()
+
+    def _on_load_failed(self, message: str):
+        if not self._mouse_stage_visible:
+            self._mouse_model_error = message
+            return
+
+        self._timer.stop()
+        self.label.setText(f"模型加载失败：{message}")
+        logger.error(f"鼠类 YOLO 模型启动加载失败：{message}")
 
 
 def _cleanup_dummy_threads():
@@ -488,9 +633,22 @@ if __name__ == "__main__" and os.path.basename(__file__) == "main.py":
         app.setStyleSheet("QWidget { color: black; }")
         # 主窗口实例化
         try:
-            allWindows = AllWindows()
-            logger.info("Appliacation start")
-            allWindows.show()
+            all_windows_holder = {}
+
+            def show_main_window_after_loading():
+                # 修改：启动弹窗加载完成后先显示主窗口，再由弹窗自动关闭自己。
+                all_windows_holder["allWindows"] = AllWindows()
+                logger.info("Appliacation start")
+                all_windows_holder["allWindows"].show()
+
+            # 修改：主窗口显示前先加载鼠类 YOLO 模型，弹窗等主窗口 show 后再关闭。
+            loading_dialog = MouseModelLoadingDialog(on_startup_ready=show_main_window_after_loading)
+            loading_dialog.start()
+            if loading_dialog.startup_error is not None:
+                raise loading_dialog.startup_error
+            allWindows = all_windows_holder.get("allWindows")
+            if allWindows is None:
+                raise RuntimeError("主窗口未成功显示")
             # 系统退出
             sys.exit(app.exec())
         except Exception as e:

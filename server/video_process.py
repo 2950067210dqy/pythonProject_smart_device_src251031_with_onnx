@@ -3,6 +3,7 @@ import os
 import random
 import shutil
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -20,6 +21,10 @@ report_logger = logger.bind(category="report_logger")
 
 # 修改：视频端使用 models/best.pt 做老鼠检测，模型按需加载并缓存，避免每个视频重复加载。
 _MOUSE_YOLO_MODEL: Optional[Any] = None
+# 修改：预加载线程和检测线程共用模型锁，防止用户快速打开视频时重复加载 best.pt。
+_MOUSE_YOLO_MODEL_LOCK = threading.Lock()
+# 修改：记录鼠类 YOLO 是否已经跑过一次预热推理，避免弹窗结束后首次检测仍然初始化卡顿。
+_MOUSE_YOLO_WARMED_UP = False
 # 修改：提高老鼠检测置信度阈值，过滤低置信度框，降低误检和重复计数概率。
 MOUSE_DETECTION_CONF_THRESHOLD = 0.25
 MOUSE_DETECTION_IOU_THRESHOLD = 0.45
@@ -65,27 +70,63 @@ def _get_mouse_yolo_model() -> Any:
     if _MOUSE_YOLO_MODEL is not None:
         return _MOUSE_YOLO_MODEL
 
-    try:
-        from ultralytics import YOLO
-    except ImportError as exc:
-        raise RuntimeError("缺少 ultralytics/torch 依赖，无法加载 models/best.pt") from exc
+    with _MOUSE_YOLO_MODEL_LOCK:
+        if _MOUSE_YOLO_MODEL is not None:
+            return _MOUSE_YOLO_MODEL
 
-    model_path = _resolve_mouse_model_path()
-    if not model_path.exists():
-        raise FileNotFoundError(f"老鼠检测模型不存在: {model_path}")
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError("缺少 ultralytics/torch 依赖，无法加载 models/best.pt") from exc
 
-    # # 修改：加载前先校验 pt 权重是否完整，避免 PyTorch 抛出晦涩的 zip/multidisk 底层错误。
-    # try:
-    #     if model_path.read_bytes()[:2] == b"PK":
-    #         with zipfile.ZipFile(model_path) as checkpoint_zip:
-    #             bad_file = checkpoint_zip.testzip()
-    #             if bad_file is not None:
-    #                 raise RuntimeError(f"模型压缩包内文件损坏: {bad_file}")
-    # except zipfile.BadZipFile as exc:
-    #     raise RuntimeError(f"老鼠检测模型文件损坏，请重新复制完整的 best.pt: {model_path}") from exc
+        model_path = _resolve_mouse_model_path()
+        if not model_path.exists():
+            raise FileNotFoundError(f"老鼠检测模型不存在: {model_path}")
 
-    _MOUSE_YOLO_MODEL = YOLO(str(model_path))
-    return _MOUSE_YOLO_MODEL
+        # # 修改：加载前先校验 pt 权重是否完整，避免 PyTorch 抛出晦涩的 zip/multidisk 底层错误。
+        # try:
+        #     if model_path.read_bytes()[:2] == b"PK":
+        #         with zipfile.ZipFile(model_path) as checkpoint_zip:
+        #             bad_file = checkpoint_zip.testzip()
+        #             if bad_file is not None:
+        #                 raise RuntimeError(f"模型压缩包内文件损坏: {bad_file}")
+        # except zipfile.BadZipFile as exc:
+        #     raise RuntimeError(f"老鼠检测模型文件损坏，请重新复制完整的 best.pt: {model_path}") from exc
+
+        # 修改：软件启动后预加载模型、检测线程首次使用模型都走同一把锁，避免重复加载。
+        _MOUSE_YOLO_MODEL = YOLO(str(model_path))
+        return _MOUSE_YOLO_MODEL
+
+
+def warmup_mouse_yolo_model() -> Any:
+    """Load mouse YOLO model and run one dummy prediction to finish first-use initialization."""
+
+    global _MOUSE_YOLO_WARMED_UP
+    model = _get_mouse_yolo_model()
+    if _MOUSE_YOLO_WARMED_UP:
+        return model
+
+    with _MOUSE_YOLO_MODEL_LOCK:
+        if _MOUSE_YOLO_WARMED_UP:
+            return model
+
+        try:
+            import numpy as np
+
+            # 修改：启动弹窗必须等第一次 YOLO 推理初始化完成后再关闭，避免打开视频时继续等待。
+            warmup_frame = np.zeros((640, 640, 3), dtype=np.uint8)
+            model.predict(
+                warmup_frame,
+                conf=get_mouse_detection_conf_threshold(),
+                iou=get_mouse_detection_iou_threshold(),
+                verbose=False,
+            )
+            _MOUSE_YOLO_WARMED_UP = True
+            logger.info("鼠类 YOLO 模型预热推理完成")
+        except Exception as exc:
+            raise RuntimeError("鼠类 YOLO 模型预热推理失败") from exc
+
+    return model
 
 
 def get_mouse_detection_conf_threshold() -> float:
@@ -99,6 +140,19 @@ def get_mouse_detection_conf_threshold() -> float:
     except Exception as exc:
         logger.warning(f"读取视频检测置信度阈值失败，使用默认值 {MOUSE_DETECTION_CONF_THRESHOLD}: {exc}")
     return MOUSE_DETECTION_CONF_THRESHOLD
+
+
+def get_mouse_detection_iou_threshold() -> float:
+    """Read mouse detection IoU threshold from server_config.ini."""
+
+    try:
+        server_cfg = global_setting.get_setting("server_config")
+        if server_cfg is not None:
+            iou = float(server_cfg["Video_Process"].get("iou_threshold", MOUSE_DETECTION_IOU_THRESHOLD))
+            return min(1.0, max(0.0, iou))
+    except Exception as exc:
+        logger.warning(f"读取视频检测 IOU 阈值失败，使用默认值 {MOUSE_DETECTION_IOU_THRESHOLD}: {exc}")
+    return MOUSE_DETECTION_IOU_THRESHOLD
 
 
 def get_mouse_use_ultralytics_tracker() -> bool:
@@ -627,6 +681,7 @@ class Video_process(QThread):
             # 修改：用稳定轨迹计数器替代“见过几个 track_id”，可合并短暂丢失后重新分配的 ID。
             mouse_counter = _MouseTrackCounter(fps=fps)
             conf_threshold = get_mouse_detection_conf_threshold()
+            iou_threshold = get_mouse_detection_iou_threshold()
             use_ultralytics_tracker = get_mouse_use_ultralytics_tracker()
             tracker_config = get_mouse_tracker_config()
             tracker_warning_logged = False
@@ -644,7 +699,7 @@ class Video_process(QThread):
                             persist=True,
                             tracker=tracker_config,
                             conf=conf_threshold,
-                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            iou=iou_threshold,
                             verbose=False,
                         )
                     except Exception as exc:
@@ -655,14 +710,14 @@ class Video_process(QThread):
                         results = model.predict(
                             frame,
                             conf=conf_threshold,
-                            iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                            iou=iou_threshold,
                             verbose=False,
                         )
                 else:
                     results = model.predict(
                         frame,
                         conf=conf_threshold,
-                        iou=MOUSE_DETECTION_IOU_THRESHOLD,
+                        iou=iou_threshold,
                         verbose=False,
                     )
 
