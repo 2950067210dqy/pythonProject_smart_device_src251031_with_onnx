@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import QLabel, QPushButton, QMessageBox, QPlainTextEdit, QComboBox
+from PyQt6.QtWidgets import QLabel, QPushButton, QMessageBox, QPlainTextEdit, QComboBox, QSizePolicy
 from loguru import logger
 
 from config.global_setting import global_setting
@@ -46,12 +46,18 @@ class ImageGallery(ThemedWidget):
         self._current_path: Optional[Path] = None
         self.test_window: Optional[RecognitionTestWindow] = None
 
+        # 修改：图片预览控件忽略 pixmap 自身 sizeHint，防止自适应布局被图片尺寸撑大后反复放大。
+        self.canvas_label.setMinimumSize(0, 0)
+        self.canvas_label.setMaximumSize(16777215, 16777215)
+        self.canvas_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.canvas_label.setScaledContents(False)
+        self.canvas_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.canvas_label.installEventFilter(self)
 
         # 绑定事件
         self.prev_btn.clicked.connect(self._select_previous)
         self.next_btn.clicked.connect(self._select_next)
-        self.refresh_btn.clicked.connect(self.refresh)
+        self.refresh_btn.clicked.connect(lambda _checked=False: self.refresh(show_latest=True))
         self.test_btn.clicked.connect(self._handle_start_test)
         if self.device_combo is not None:
             self.device_combo.currentIndexChanged.connect(self._on_device_combo_changed)
@@ -69,6 +75,8 @@ class ImageGallery(ThemedWidget):
     def set_device_type(self, type_code: str) -> None:
         type_code = (type_code or "").upper()
         if type_code == self._current_type:
+            # 修改：重复点击蜚蠊/蝇类时刷新到最新检测完成的图片。
+            self.refresh(show_latest=True)
             return
 
         self._current_type = type_code
@@ -78,9 +86,10 @@ class ImageGallery(ThemedWidget):
         if self.test_window is not None:
             self.test_window.set_device_type(type_code)
         self._selected_device = None
-        self.refresh()
+        # 修改：切换到蜚蠊/蝇类页面时默认展示最新检测完成的记录图片。
+        self.refresh(show_latest=True)
 
-    def refresh(self) -> None:
+    def refresh(self, show_latest: bool = False) -> None:
         directory = self._current_dir
         if directory is None:
             self._images = []
@@ -110,7 +119,13 @@ class ImageGallery(ThemedWidget):
             self._update_navigation_buttons()
             return
 
-        if previous_path and previous_path in self._images:
+        if show_latest:
+            # 修改：处理完成或手动刷新时选中按修改时间排序后的第一张，即最新检测结果。
+            self._current_index = 0
+            latest_device = self._extract_device_code(self._images[0])
+            if latest_device:
+                self._selected_device = latest_device
+        elif previous_path and previous_path in self._images:
             self._current_index = self._images.index(previous_path)
         else:
             self._current_index = 0
@@ -119,8 +134,9 @@ class ImageGallery(ThemedWidget):
         self._update_navigation_buttons()
 
     def on_data_updated(self) -> None:
-        """供外部信号复用，简单调用 refresh。"""
-        self.refresh()
+        """供外部信号复用，数据更新后展示最新检测完成的图片。"""
+        # 修改：蜚蠊/蝇类检测完成后自动跳到最新归档图片。
+        self.refresh(show_latest=True)
 
     def current_image_path(self) -> Optional[Path]:
         """返回当前展示的图片路径。"""
@@ -361,6 +377,8 @@ class ImageGallery(ThemedWidget):
         if target_size.width() <= 0 or target_size.height() <= 0:
             return
 
+        # 修改：自适应显示时只允许缩小或等比例适配容器，不超过原图尺寸继续放大。
+        target_size = target_size.boundedTo(self._current_pixmap.size())
         scaled = self._current_pixmap.scaled(
             target_size,
             Qt.AspectRatioMode.KeepAspectRatio,

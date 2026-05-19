@@ -4,9 +4,9 @@ from functools import partial
 from unittest import case
 
 from PyQt6.QtCharts import QChart, QBarSet, QBarSeries, QBarCategoryAxis, QValueAxis, QChartView, QHorizontalBarSeries
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import QVBoxLayout, QGraphicsSimpleTextItem, QGraphicsTextItem, QPushButton, QHBoxLayout, QSizePolicy
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QMargins, QEvent
+from PyQt6.QtGui import QPainter, QFontMetrics, QBrush
+from PyQt6.QtWidgets import QVBoxLayout, QGraphicsSimpleTextItem, QGraphicsTextItem, QPushButton, QHBoxLayout, QSizePolicy, QScrollArea
 from loguru import logger
 
 from config.global_setting import global_setting
@@ -110,6 +110,8 @@ class BarChartApp(ThemedWidget):
         # 离线判定缓存
         self.offline_highlight = {}
         self.categories=None
+        self._custom_y_label_items = []
+        self._custom_y_title_item = None
         self.data_thread=None
         self._select_callback = None
         self._init_ui()
@@ -118,9 +120,18 @@ class BarChartApp(ThemedWidget):
     def _init_ui(self):
         self.chart_view = QChartView()
         self.chart_view.setMouseTracking(True)  # 开启鼠标追踪
+        self.chart_view.installEventFilter(self)
+        # 修改：图表放入独立滚动区域，类别多时纵向滚动，不再把每行字体压到一起。
+        self.chart_scroll_area = QScrollArea()
+        self.chart_scroll_area.setWidgetResizable(True)
+        self.chart_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.chart_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.chart_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.chart_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # 修改：图表视图跟随右侧容器自适应大小，不再由数据条数决定固定高度。
         self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.chart_view.setMinimumSize(0, 0)
+        self.chart_scroll_area.setWidget(self.chart_view)
 
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)  # 关键设置 抗锯齿
         self.chart_view.setObjectName(f"{self.object_name}")
@@ -157,7 +168,7 @@ class BarChartApp(ThemedWidget):
 
         chart_layout = QVBoxLayout()
         chart_layout.setObjectName(f"chart_layout")
-        chart_layout.addWidget(self.chart_view, 1)
+        chart_layout.addWidget(self.chart_scroll_area, 1)
         chart_main_layout.addLayout(chart_btn_layout)
         chart_main_layout.addLayout(chart_layout, 1)
         self.parent_layout.addLayout(chart_main_layout, 1)
@@ -171,6 +182,8 @@ class BarChartApp(ThemedWidget):
         self.chart.setAnimationOptions(QChart.AnimationOption.SeriesAnimations)
         self.chart.setObjectName(f"{self.object_name}_chart")
         self.chart.setTitle(self.orgin_title)
+        # 修改：预留纵坐标标签空间，避免自适应窗口变窄时设备名被压成省略号。
+        self.chart.setMargins(QMargins(120, 16, 24, 24))
         # 初始化占位：避免首次没有任何 series 时界面空白
         self.series = QHorizontalBarSeries()
         placeholder = QBarSet("无数据")
@@ -499,6 +512,13 @@ class BarChartApp(ThemedWidget):
             self.chart.addAxis(self.y_axis, Qt.AlignmentFlag.AlignLeft)
             self.series.detachAxis(self.y_axis)
             self.series.attachAxis(self.y_axis)
+        # 修改：隐藏 QtCharts 原生分类标签，改用自绘完整设备名，避免小窗口时被强制省略为 ...。
+        self.y_axis.setLabelsVisible(False)
+        # 修改：隐藏 QtCharts 原生纵轴标题，改为放在图表最左侧自绘，避免压到设备名。
+        self.y_axis.setTitleText("")
+        # 修改：根据当前设备名长度动态调整左侧留白，保证纵坐标设备名完整显示。
+        self._adjust_y_axis_label_margin()
+        QTimer.singleShot(0, self._refresh_custom_y_axis_labels)
         # 异步着色（等待轴标签绘制完成）
         QTimer.singleShot(0, self._recolor_axis_labels)
         pass
@@ -506,6 +526,7 @@ class BarChartApp(ThemedWidget):
     def _recolor_axis_labels(self):
         """遍历场景中 Y 轴标签，将离线的标签文字置为红色。
         QtCharts 版本/平台差异：轴刻度文字可能是 QGraphicsSimpleTextItem 或 QGraphicsTextItem。"""
+        self._refresh_custom_y_axis_labels()
         if not getattr(self, '_offline_label_prefixes', None):
             return
         try:
@@ -547,13 +568,87 @@ class BarChartApp(ThemedWidget):
     def set_style(self):
         pass
 
-    def _adjust_chart_height(self, nums: int):
-        """让图表高度交给布局管理，随窗口大小自适应。"""
+    def _adjust_y_axis_label_margin(self):
+        """按设备标签宽度给 Y 轴预留空间，避免 QtCharts 自动省略成 ...。"""
 
-        # 修改：按钮切换时不再 setFixedHeight，避免 barchart 因设备数量变化而忽大忽小。
-        self.chart_view.setMinimumHeight(0)
+        if self.chart is None or self.y_axis is None:
+            return
+        try:
+            labels = self.categories or ["无设备"]
+            metrics = QFontMetrics(self.y_axis.labelsFont())
+            label_width = max(metrics.horizontalAdvance(str(label)) for label in labels)
+            view_width = self.chart_view.width() if self.chart_view is not None else 0
+            max_left = max(130, int(view_width * 0.35)) if view_width > 0 else 180
+            left_margin = min(max(label_width + 64, 130), max_left)
+            # 修改：左边距随标签变长增大，但限制最大占比，避免挤没柱状图区域。
+            self.chart.setMargins(QMargins(left_margin, 16, 24, 24))
+        except Exception as e:
+            logger.debug(f"[BarChart] 调整纵坐标标签边距失败: {e}")
+
+    def _refresh_custom_y_axis_labels(self):
+        """自绘完整 Y 轴设备名，避免 QtCharts 在空间不足时显示省略号。"""
+
+        if self.chart is None or not self.categories:
+            return
+        try:
+            for item in self._custom_y_label_items:
+                self.chart.scene().removeItem(item)
+            self._custom_y_label_items = []
+            if self._custom_y_title_item is not None:
+                self.chart.scene().removeItem(self._custom_y_title_item)
+                self._custom_y_title_item = None
+
+            plot_area = self.chart.plotArea()
+            count = len(self.categories)
+            if count <= 0 or plot_area.height() <= 0:
+                return
+
+            font = self.y_axis.labelsFont() if self.y_axis is not None else self.chart.font()
+            metrics = QFontMetrics(font)
+            row_height = plot_area.height() / count
+            label_x = max(4, plot_area.left() - max(metrics.horizontalAdvance(str(label)) for label in self.categories) - 10)
+
+            # 修改：把“设备名称”固定放到最左侧，和设备标签分开显示。
+            title_item = QGraphicsTextItem("设备名称")
+            title_item.setFont(font)
+            title_item.setRotation(-90)
+            title_rect = title_item.boundingRect()
+            title_x = max(4, label_x - title_rect.height() - 18)
+            title_y = plot_area.center().y() + title_rect.width() / 2
+            title_item.setPos(title_x, title_y)
+            title_item.setZValue(10)
+            self.chart.scene().addItem(title_item)
+            self._custom_y_title_item = title_item
+
+            for index, label in enumerate(self.categories):
+                item = QGraphicsSimpleTextItem(str(label))
+                item.setFont(font)
+                if str(label).split('(')[0] in getattr(self, '_offline_label_prefixes', set()):
+                    item.setBrush(QBrush(Qt.GlobalColor.red))
+                y_center = plot_area.top() + row_height * (index + 0.5)
+                item.setPos(label_x, y_center - metrics.height() / 2)
+                item.setZValue(10)
+                self.chart.scene().addItem(item)
+                self._custom_y_label_items.append(item)
+        except Exception as e:
+            logger.debug(f"[BarChart] 刷新自绘纵坐标标签失败: {e}")
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "chart_view", None) and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._refresh_custom_y_axis_labels)
+        return super().eventFilter(obj, event)
+
+    def _adjust_chart_height(self, nums: int):
+        """类别多时撑开图表内容高度，由内部滚动区域承载。"""
+
+        # 修改：按类别数量保留每行显示高度，避免设备过多时纵坐标字体和柱条挤在一起。
+        row_height = 34
+        reserved_height = 170
+        min_content_height = max(0, int(nums) * row_height + reserved_height)
+        self.chart_view.setMinimumHeight(min_content_height)
         self.chart_view.setMaximumHeight(16777215)
         self.chart_view.updateGeometry()
+        QTimer.singleShot(0, self._refresh_custom_y_axis_labels)
 
 
 

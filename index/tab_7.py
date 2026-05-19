@@ -249,15 +249,17 @@ class Tab_7(ThemedWidget):
                 image_canvas.setMinimumSize(0, 0)
                 image_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+            path_display: QPlainTextEdit = self.frame.findChild(QPlainTextEdit, "plainTextEdit")
             scroll_area_path: QScrollArea = self.frame.findChild(QScrollArea, "scrollArea_path")
             if scroll_area_path is not None:
-                scroll_area_path.setMinimumSize(0, 0)
+                # 修改：路径显示区域最小高度保留一行文字，避免窗口变小时文本被压扁。
+                scroll_area_path.setMinimumHeight(self._path_display_min_height(path_display))
                 scroll_area_path.setMaximumSize(16777215, 16777215)
                 scroll_area_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-            path_display: QPlainTextEdit = self.frame.findChild(QPlainTextEdit, "plainTextEdit")
             if path_display is not None:
-                path_display.setMinimumSize(0, 0)
+                # 修改：路径文本框最小高度按字体和横向滚动条计算，至少完整显示一行。
+                path_display.setMinimumHeight(self._path_display_min_height(path_display))
                 path_display.setMaximumSize(16777215, 16777215)
                 path_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         except Exception as e:
@@ -270,17 +272,34 @@ class Tab_7(ThemedWidget):
             scroll_area: QScrollArea = self.frame.findChild(QScrollArea, "scrollArea_path")
             path_display: QPlainTextEdit = self.frame.findChild(QPlainTextEdit, "plainTextEdit")
             if scroll_area is not None:
-                # 修改：路径显示区域不再固定高度，随整体布局自适应。
-                scroll_area.setMinimumSize(0, 0)
+                # 修改：路径显示区域不再固定高度，但最小保留一行文字高度。
+                scroll_area.setMinimumHeight(self._path_display_min_height(path_display))
                 scroll_area.setMaximumSize(16777215, 16777215)
                 scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             if path_display is not None:
-                path_display.setMinimumSize(0, 0)
+                # 修改：路径文本框最小高度按字体和横向滚动条计算，至少完整显示一行。
+                path_display.setMinimumHeight(self._path_display_min_height(path_display))
                 path_display.setMaximumSize(16777215, 16777215)
                 path_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 path_display.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         except Exception as e:
             logger.debug(f"[Tab7] adjust path display height failed: {e}")
+
+    @staticmethod
+    def _path_display_min_height(path_display: QPlainTextEdit | None) -> int:
+        """计算路径显示控件完整展示一行文本所需的最小高度。"""
+
+        if path_display is None:
+            return 36
+        try:
+            # 修改：最小高度包含字体、边框和横向滚动条，避免滚动条盖住路径文字。
+            line_height = path_display.fontMetrics().height()
+            frame_height = path_display.frameWidth() * 2
+            document_margin = int(path_display.document().documentMargin() * 2)
+            scrollbar_height = path_display.horizontalScrollBar().sizeHint().height()
+            return max(36, line_height + frame_height + document_margin + scrollbar_height + 8)
+        except Exception:
+            return 36
 
     # 实例化自定义ui
     def _init_customize_ui(self):
