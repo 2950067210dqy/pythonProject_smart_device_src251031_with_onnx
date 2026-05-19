@@ -195,21 +195,73 @@ class Tab_7(ThemedWidget):
             self.frame = QWidget() if self.type == 0 else QMainWindow(parent=parent)
         self.ui = Ui_tab7_frame()
         self.ui.setupUi(self.frame)
+        self._make_layout_adaptive()
 
         # 运行时设置布局伸缩（避免 .ui 中 stretch 属性生成错误的 setStretch 调用）
         try:
-            # 顶部左右：左(媒体面板) : 右(图表) = 5 : 2
-            self.ui.top_layout.setStretch(0, 5)
+            # 修改：各区域用伸缩比例自适应窗口大小，避免固定最小宽高撑住窗口。
+            self.ui.main_layout.setStretch(0, 8)
+            self.ui.main_layout.setStretch(1, 2)
+            self.ui.top_layout.setStretch(0, 3)
             self.ui.top_layout.setStretch(1, 2)
-            # 左侧内部：scrollArea_path(0) 保持0，媒体堆栈(1) 给予权重
-            self.ui.left_panel_layout.setStretch(0, 0)
-            self.ui.left_panel_layout.setStretch(1, 10)
+            self.ui.left_panel_layout.setStretch(0, 1)
+            self.ui.left_panel_layout.setStretch(1, 8)
         except Exception as e:
             logger.debug(f"[Tab7] setStretch runtime adjust failed: {e}")
 
         self._adjust_path_display_height()
         self._retranslateUi()
         pass
+
+    def _make_layout_adaptive(self):
+        """清理 UI 生成文件里的固定最小/最大尺寸，让窗口和子组件按布局自适应。"""
+
+        try:
+            # 修改：主窗口和核心容器不再被固定最小尺寸限制，允许整体随窗口缩放。
+            self.frame.setMinimumSize(0, 0)
+            central_widget: QWidget = self.frame.findChild(QWidget, "centralwidget")
+            if central_widget is not None:
+                central_widget.setMinimumSize(0, 0)
+                central_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+            adaptive_widgets = [
+                "left_panel",
+                "media_stack",
+                "image_page",
+                "video_page",
+                "video_container",
+                "graphic_frame",
+                "scrollArea",
+                "scrollAreaWidget",
+                "status_frame",
+                "statusBrowser",
+            ]
+            for object_name in adaptive_widgets:
+                widget = self.frame.findChild(QWidget, object_name)
+                if widget is None:
+                    continue
+                widget.setMinimumSize(0, 0)
+                widget.setMaximumSize(16777215, 16777215)
+                widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+            image_canvas: QLabel = self.frame.findChild(QLabel, "image_canvas")
+            if image_canvas is not None:
+                image_canvas.setMinimumSize(0, 0)
+                image_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+            scroll_area_path: QScrollArea = self.frame.findChild(QScrollArea, "scrollArea_path")
+            if scroll_area_path is not None:
+                scroll_area_path.setMinimumSize(0, 0)
+                scroll_area_path.setMaximumSize(16777215, 16777215)
+                scroll_area_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+            path_display: QPlainTextEdit = self.frame.findChild(QPlainTextEdit, "plainTextEdit")
+            if path_display is not None:
+                path_display.setMinimumSize(0, 0)
+                path_display.setMaximumSize(16777215, 16777215)
+                path_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception as e:
+            logger.debug(f"[Tab7] make layout adaptive failed: {e}")
 
     def _adjust_path_display_height(self):
         """放大文件路径显示区域，避免长路径在高度过小时显示不完整。"""
@@ -218,12 +270,14 @@ class Tab_7(ThemedWidget):
             scroll_area: QScrollArea = self.frame.findChild(QScrollArea, "scrollArea_path")
             path_display: QPlainTextEdit = self.frame.findChild(QPlainTextEdit, "plainTextEdit")
             if scroll_area is not None:
-                # 修改：原 UI 最大高度为 70，路径框偏矮；运行时提高高度，避免编辑生成文件。
-                scroll_area.setMinimumHeight(84)
-                scroll_area.setMaximumHeight(120)
-                scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                # 修改：路径显示区域不再固定高度，随整体布局自适应。
+                scroll_area.setMinimumSize(0, 0)
+                scroll_area.setMaximumSize(16777215, 16777215)
+                scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             if path_display is not None:
-                path_display.setMinimumHeight(72)
+                path_display.setMinimumSize(0, 0)
+                path_display.setMaximumSize(16777215, 16777215)
+                path_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 path_display.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         except Exception as e:
             logger.debug(f"[Tab7] adjust path display height failed: {e}")
@@ -353,11 +407,15 @@ class Tab_7(ThemedWidget):
         # 找到 scrollarea
         scrollArea: QScrollArea = self.frame.findChild(QScrollArea, "scrollArea")
         scrollArea.setWidgetResizable(True)
+        # 修改：右侧 barchart 跟随窗口大小自适应，不由内容高度撑大/缩小。
+        scrollArea.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # 找到 scrollarea_container
         scrollarea_container: QWidget = self.frame.findChild(QWidget, "scrollAreaWidget")
+        scrollarea_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         sub_layout = QVBoxLayout(scrollarea_container)
         sub_layout.setObjectName(f"layout_sub")
+        sub_layout.setContentsMargins(0, 0, 0, 0)
         self.charts = BarChartApp(parent=sub_layout, object_name="charts_data")
 
         scrollarea_container.setLayout(sub_layout)

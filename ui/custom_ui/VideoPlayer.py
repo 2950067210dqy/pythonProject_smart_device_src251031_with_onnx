@@ -7,7 +7,7 @@ import cv2
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QFileDialog, QHBoxLayout, QWidget, QSlider, QLabel
+from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QFileDialog, QHBoxLayout, QWidget, QSlider, QLabel, QSizePolicy
 from loguru import logger
 
 from config.global_setting import global_setting
@@ -242,7 +242,9 @@ class VideoPlayer(QObject):
         # 修改：视频显示组件改为 QLabel，用检测线程逐帧推送带框画面。
         self.video_widget = QLabel()
         self.video_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_widget.setMinimumSize(640, 360)
+        # 修改：视频显示区域不再固定最小尺寸，随窗口和布局自适应缩放。
+        self.video_widget.setMinimumSize(0, 0)
+        self.video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.video_widget.setStyleSheet("background-color: black;")
 
         # 创建主布局

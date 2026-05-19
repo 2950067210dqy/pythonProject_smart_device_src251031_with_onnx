@@ -69,7 +69,8 @@ class MouseModelLoadingDialog(QDialog):
 
         self.setWindowTitle("正在加载模型")
         self.setModal(True)
-        self.setFixedSize(360, 120)
+        # 修改：启动弹窗不再固定尺寸，只设置初始大小，跟随系统缩放自适应。
+        self.resize(360, 120)
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.CustomizeWindowHint

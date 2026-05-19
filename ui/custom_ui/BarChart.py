@@ -6,7 +6,7 @@ from unittest import case
 from PyQt6.QtCharts import QChart, QBarSet, QBarSeries, QBarCategoryAxis, QValueAxis, QChartView, QHorizontalBarSeries
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import QVBoxLayout, QGraphicsSimpleTextItem, QGraphicsTextItem, QPushButton, QHBoxLayout
+from PyQt6.QtWidgets import QVBoxLayout, QGraphicsSimpleTextItem, QGraphicsTextItem, QPushButton, QHBoxLayout, QSizePolicy
 from loguru import logger
 
 from config.global_setting import global_setting
@@ -118,12 +118,9 @@ class BarChartApp(ThemedWidget):
     def _init_ui(self):
         self.chart_view = QChartView()
         self.chart_view.setMouseTracking(True)  # 开启鼠标追踪
-        # 不再使用固定尺寸，允许随布局伸缩
-        sizePolicy = self.chart_view.sizePolicy()
-        sizePolicy.setHorizontalStretch(1)
-        sizePolicy.setVerticalStretch(1)
-        sizePolicy.setHeightForWidth(False)
-        self.chart_view.setSizePolicy(sizePolicy)
+        # 修改：图表视图跟随右侧容器自适应大小，不再由数据条数决定固定高度。
+        self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.chart_view.setMinimumSize(0, 0)
 
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)  # 关键设置 抗锯齿
         self.chart_view.setObjectName(f"{self.object_name}")
@@ -160,10 +157,10 @@ class BarChartApp(ThemedWidget):
 
         chart_layout = QVBoxLayout()
         chart_layout.setObjectName(f"chart_layout")
-        chart_layout.addWidget(self.chart_view)
+        chart_layout.addWidget(self.chart_view, 1)
         chart_main_layout.addLayout(chart_btn_layout)
-        chart_main_layout.addLayout(chart_layout)
-        self.parent_layout.addLayout(chart_main_layout)
+        chart_main_layout.addLayout(chart_layout, 1)
+        self.parent_layout.addLayout(chart_main_layout, 1)
         pass
 
 
@@ -551,13 +548,12 @@ class BarChartApp(ThemedWidget):
         pass
 
     def _adjust_chart_height(self, nums: int):
-        """根据条目数量调整图表视图高度（每条 40px 基础 + 头部空间）。
-        在可用布局内不强制固定宽度。"""
-        base = 220  # 标题 + 轴标签与 padding 估计
-        per = 40
-        nums = max(1, nums)
-        target_h = base + per * nums
-        self.chart_view.setFixedHeight(target_h)
+        """让图表高度交给布局管理，随窗口大小自适应。"""
+
+        # 修改：按钮切换时不再 setFixedHeight，避免 barchart 因设备数量变化而忽大忽小。
+        self.chart_view.setMinimumHeight(0)
+        self.chart_view.setMaximumHeight(16777215)
+        self.chart_view.updateGeometry()
 
 
 

@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -35,7 +36,8 @@ class RecognitionTestWindow(ThemedWidget):
             self.setParent(parent)
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowTitle("识别模型测试")
-        self.setMinimumSize(720, 540)
+        # 修改：测试窗口不再固定最小尺寸，跟随用户调整自适应显示。
+        self.setMinimumSize(0, 0)
         self.setAcceptDrops(True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
@@ -71,7 +73,9 @@ class RecognitionTestWindow(ThemedWidget):
 
         self.image_label = QLabel("等待图片...", self)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumSize(360, 270)
+        # 修改：图片显示区域不再固定最小尺寸，随滚动区/窗口自适应。
+        self.image_label.setMinimumSize(0, 0)
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.image_label.setFrameShape(QFrame.Shape.StyledPanel)
         container_layout.addWidget(self.image_label)
 
