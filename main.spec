@@ -16,6 +16,17 @@ tracker_hiddenimports = [
     'ultralytics.trackers.utils.matching',
 ]
 
+packaging_excludes = [
+    # 修改：程序运行 ONNX 推理只需要 onnxruntime；onnx 是导出/校验用，打包时排除避免 onnx.reference 崩溃。
+    'onnx',
+    'onnx.reference',
+    'onnx.reference.ops',
+    'onnx.reference.ops_optimized',
+    'ml_dtypes',
+    # 修改：项目运行不需要 tensorboard，排除后避免 torch.utils.tensorboard 的缺失 warning。
+    'tensorboard',
+    'torch.utils.tensorboard',
+]
 
 a = Analysis(
     ['main.py'],
@@ -26,7 +37,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=packaging_excludes,
     noarchive=False,
     optimize=0,
 )
@@ -59,7 +70,7 @@ sender_analysis = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=packaging_excludes,
     noarchive=False,
     optimize=0,
 )

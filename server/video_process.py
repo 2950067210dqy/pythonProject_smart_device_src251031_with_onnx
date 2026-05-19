@@ -19,9 +19,9 @@ from util.time_util import time_util
 report_logger = logger.bind(category="report_logger")
 
 
-# 修改：视频端使用 models/best.pt 做老鼠检测，模型按需加载并缓存，避免每个视频重复加载。
+# 修改：视频端优先使用 models/best.onnx 做老鼠检测，没有 ONNX 时回退 models/best.pt。
 _MOUSE_YOLO_MODEL: Optional[Any] = None
-# 修改：预加载线程和检测线程共用模型锁，防止用户快速打开视频时重复加载 best.pt。
+# 修改：预加载线程和检测线程共用模型锁，防止用户快速打开视频时重复加载模型。
 _MOUSE_YOLO_MODEL_LOCK = threading.Lock()
 # 修改：记录鼠类 YOLO 是否已经跑过一次预热推理，避免弹窗结束后首次检测仍然初始化卡顿。
 _MOUSE_YOLO_WARMED_UP = False
@@ -46,21 +46,41 @@ def _get_bundle_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _resolve_mouse_model_path() -> Path:
-    """Resolve the mouse YOLO pt model path."""
+def _resolve_mouse_model_candidates() -> List[Path]:
+    """Resolve mouse YOLO model candidates, preferring ONNX over PT."""
 
     bundle_root = _get_bundle_root()
-    model_path = bundle_root / "models" / "best.pt"
-    if model_path.exists():
-        return model_path
+    candidates = [
+        bundle_root / "models" / "best.onnx",
+        bundle_root / "models" / "best.pt",
+    ]
 
     # 修改：打包后允许把 models 文件夹放在 exe 同级目录，和图像模型加载逻辑保持一致。
     if getattr(sys, "frozen", False):
-        exe_model_path = Path(sys.executable).resolve().parent / "models" / "best.pt"
-        if exe_model_path.exists():
-            return exe_model_path
+        exe_model_dir = Path(sys.executable).resolve().parent / "models"
+        candidates.extend([
+            exe_model_dir / "best.onnx",
+            exe_model_dir / "best.pt",
+        ])
 
-    return model_path
+    unique_candidates = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            unique_candidates.append(candidate)
+            seen.add(key)
+    return unique_candidates
+
+
+def _resolve_mouse_model_path() -> Path:
+    """Resolve the mouse YOLO model path, preferring ONNX over PT."""
+
+    candidates = _resolve_mouse_model_candidates()
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def _get_mouse_yolo_model() -> Any:
@@ -77,25 +97,25 @@ def _get_mouse_yolo_model() -> Any:
         try:
             from ultralytics import YOLO
         except ImportError as exc:
-            raise RuntimeError("缺少 ultralytics/torch 依赖，无法加载 models/best.pt") from exc
+            raise RuntimeError("缺少 ultralytics/torch 依赖，无法加载鼠类 YOLO 模型") from exc
 
-        model_path = _resolve_mouse_model_path()
-        if not model_path.exists():
-            raise FileNotFoundError(f"老鼠检测模型不存在: {model_path}")
+        load_errors = []
+        for model_path in _resolve_mouse_model_candidates():
+            if not model_path.exists():
+                continue
+            try:
+                # 修改：优先加载 best.onnx；ONNX 不存在或加载失败时再回退 best.pt。
+                _MOUSE_YOLO_MODEL = YOLO(str(model_path), task="detect")
+                logger.info(f"鼠类 YOLO 模型加载完成: {model_path}")
+                return _MOUSE_YOLO_MODEL
+            except Exception as exc:
+                load_errors.append(f"{model_path}: {exc}")
+                logger.warning(f"鼠类 YOLO 模型加载失败，尝试下一个候选模型: {model_path} -> {exc}")
 
-        # # 修改：加载前先校验 pt 权重是否完整，避免 PyTorch 抛出晦涩的 zip/multidisk 底层错误。
-        # try:
-        #     if model_path.read_bytes()[:2] == b"PK":
-        #         with zipfile.ZipFile(model_path) as checkpoint_zip:
-        #             bad_file = checkpoint_zip.testzip()
-        #             if bad_file is not None:
-        #                 raise RuntimeError(f"模型压缩包内文件损坏: {bad_file}")
-        # except zipfile.BadZipFile as exc:
-        #     raise RuntimeError(f"老鼠检测模型文件损坏，请重新复制完整的 best.pt: {model_path}") from exc
-
-        # 修改：软件启动后预加载模型、检测线程首次使用模型都走同一把锁，避免重复加载。
-        _MOUSE_YOLO_MODEL = YOLO(str(model_path))
-        return _MOUSE_YOLO_MODEL
+        candidate_text = ", ".join(str(path) for path in _resolve_mouse_model_candidates())
+        if load_errors:
+            raise RuntimeError(f"鼠类 YOLO 模型加载失败，候选模型: {candidate_text}; 错误: {'; '.join(load_errors)}")
+        raise FileNotFoundError(f"老鼠检测模型不存在，候选模型: {candidate_text}")
 
 
 def warmup_mouse_yolo_model() -> Any:
