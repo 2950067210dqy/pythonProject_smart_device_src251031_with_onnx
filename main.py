@@ -61,7 +61,6 @@ class MouseModelLoadingDialog(QDialog):
         self._mouse_model_loaded = False
         self._mouse_model_error = ""
         self._main_window_shown = False
-        self._closing_after_progress = False
         self._on_startup_ready = on_startup_ready
         self.startup_error = None
         self._loader = MouseModelStartupLoader(self)
@@ -99,7 +98,6 @@ class MouseModelLoadingDialog(QDialog):
         self._mouse_model_loaded = False
         self._mouse_model_error = ""
         self._main_window_shown = False
-        self._closing_after_progress = False
         self.label.setText("正在加载蜚蠊模型")
         self.progress_bar.setValue(0)
         self._timer.start(80)
@@ -122,10 +120,6 @@ class MouseModelLoadingDialog(QDialog):
         if self._progress_value < self._progress_cap:
             self._progress_value += 1
             self.progress_bar.setValue(self._progress_value)
-            if self._closing_after_progress and self._progress_value >= 100:
-                self._timer.stop()
-                self.label.setText("已完成")
-                QTimer.singleShot(300, self.accept)
 
     def _show_fly_stage(self):
         # 修改：蝇类模型加载阶段仅显示提示，不实际加载模型。
@@ -152,7 +146,7 @@ class MouseModelLoadingDialog(QDialog):
             self._mouse_model_loaded = True
             return
 
-        # 修改：模型加载完后进度最多先走到 99%，主窗口显示后再慢慢走到 100%。
+        # 修改：模型加载完后先保持在 99% 以内，主窗口显示时立即跳到 100%。
         self._progress_cap = 99
         self.label.setText("正在打开程序...")
         if not self._timer.isActive():
@@ -160,15 +154,17 @@ class MouseModelLoadingDialog(QDialog):
         QTimer.singleShot(500, self._show_main_window_then_finish)
 
     def _show_main_window_then_finish(self):
-        # 修改：模型加载完成后先创建并显示主窗口，再让进度条继续到 100% 后关闭弹窗。
+        # 修改：主窗口显示后进度条立即到 100%，再自动关闭启动加载弹窗。
         try:
             if self._on_startup_ready is not None:
                 self._on_startup_ready()
             self._main_window_shown = True
-            self._closing_after_progress = True
+            self._timer.stop()
+            self._progress_value = 100
             self._progress_cap = 100
-            if not self._timer.isActive():
-                self._timer.start(80)
+            self.progress_bar.setValue(100)
+            self.label.setText("已完成")
+            QTimer.singleShot(300, self.accept)
         except Exception as exc:
             self.startup_error = exc
             logger.error(f"主窗口显示失败：{exc}")

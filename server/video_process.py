@@ -21,6 +21,7 @@ report_logger = logger.bind(category="report_logger")
 
 # 修改：视频端优先使用 models/best.onnx 做老鼠检测，没有 ONNX 时回退 models/best.pt。
 _MOUSE_YOLO_MODEL: Optional[Any] = None
+_MOUSE_YOLO_MODEL_PATH: Optional[Path] = None
 # 修改：预加载线程和检测线程共用模型锁，防止用户快速打开视频时重复加载模型。
 _MOUSE_YOLO_MODEL_LOCK = threading.Lock()
 # 修改：记录鼠类 YOLO 是否已经跑过一次预热推理，避免弹窗结束后首次检测仍然初始化卡顿。
@@ -86,7 +87,7 @@ def _resolve_mouse_model_path() -> Path:
 def _get_mouse_yolo_model() -> Any:
     """Lazy-load the YOLO model used for mouse video detection."""
 
-    global _MOUSE_YOLO_MODEL
+    global _MOUSE_YOLO_MODEL, _MOUSE_YOLO_MODEL_PATH
     if _MOUSE_YOLO_MODEL is not None:
         return _MOUSE_YOLO_MODEL
 
@@ -106,6 +107,7 @@ def _get_mouse_yolo_model() -> Any:
             try:
                 # 修改：优先加载 best.onnx；ONNX 不存在或加载失败时再回退 best.pt。
                 _MOUSE_YOLO_MODEL = YOLO(str(model_path), task="detect")
+                _MOUSE_YOLO_MODEL_PATH = model_path
                 logger.info(f"鼠类 YOLO 模型加载完成: {model_path}")
                 return _MOUSE_YOLO_MODEL
             except Exception as exc:
@@ -125,9 +127,19 @@ def warmup_mouse_yolo_model() -> Any:
     model = _get_mouse_yolo_model()
     if _MOUSE_YOLO_WARMED_UP:
         return model
+    if _MOUSE_YOLO_MODEL_PATH is not None and _MOUSE_YOLO_MODEL_PATH.suffix.lower() == ".onnx":
+        # 修改：ONNX 模型启动时只加载 session，不再跑空白帧预热推理，减少无显卡低主频机器启动等待。
+        _MOUSE_YOLO_WARMED_UP = True
+        logger.info("鼠类 ONNX 模型已加载，跳过预热推理")
+        return model
 
     with _MOUSE_YOLO_MODEL_LOCK:
         if _MOUSE_YOLO_WARMED_UP:
+            return model
+        if _MOUSE_YOLO_MODEL_PATH is not None and _MOUSE_YOLO_MODEL_PATH.suffix.lower() == ".onnx":
+            # 修改：并发情况下再次确认 ONNX 模型无需 dummy predict。
+            _MOUSE_YOLO_WARMED_UP = True
+            logger.info("鼠类 ONNX 模型已加载，跳过预热推理")
             return model
 
         try:
