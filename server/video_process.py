@@ -1,3 +1,4 @@
+import configparser
 import csv
 import os
 import random
@@ -30,6 +31,8 @@ _MOUSE_YOLO_WARMED_UP = False
 MOUSE_DETECTION_CONF_THRESHOLD = 0.25
 MOUSE_DETECTION_IOU_THRESHOLD = 0.45
 MOUSE_TRACK_CONFIRM_FRAMES =2
+MOUSE_IS_TEST_VIDEO = False
+MOUSE_IS_TEST_VIDEO_NUMS = 1
 # 修改：默认启用 Ultralytics 内置 tracker，实际开关从 server_config.ini 的 Video_Process 读取。
 MOUSE_USE_ULTRALYTICS_TRACKER = True
 MOUSE_TRACKER_CONFIG = "bytetrack.yaml"
@@ -45,6 +48,58 @@ def _get_bundle_root() -> Path:
             return Path(sys._MEIPASS)
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[1]
+
+
+def _server_config_candidates() -> List[Path]:
+    """Return possible server_config.ini locations for source and packaged runtime."""
+
+    candidates = [
+        Path.cwd() / "server_config.ini",
+        _get_bundle_root() / "server_config.ini",
+    ]
+    if getattr(sys, "frozen", False):
+        candidates.insert(0, Path(sys.executable).resolve().parent / "server_config.ini")
+
+    unique_candidates = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate.resolve())
+        if key not in seen:
+            unique_candidates.append(candidate)
+            seen.add(key)
+    return unique_candidates
+
+
+def _get_video_process_config_value(key: str, default: Any) -> Any:
+    """Read [Video_Process] value from server_config.ini first, then cached config."""
+
+    # 修改：鼠类视频参数每次直接读取 server_config.ini，避免启动缓存或打包目录配置导致修改后不生效。
+    for config_path in _server_config_candidates():
+        if not config_path.exists():
+            continue
+        try:
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read(config_path, encoding="utf-8-sig")
+            if not parser.has_section("Video_Process"):
+                continue
+            for option, value in parser.items("Video_Process"):
+                if option.lower() == key.lower():
+                    return value
+        except Exception as exc:
+            logger.debug(f"读取鼠类视频配置失败 {config_path}: {exc}")
+
+    try:
+        server_cfg = global_setting.get_setting("server_config")
+        if server_cfg is not None:
+            video_cfg = server_cfg["Video_Process"]
+            if key in video_cfg:
+                return video_cfg.get(key, default)
+            for option, value in video_cfg.items():
+                if option.lower() == key.lower():
+                    return value
+    except Exception as exc:
+        logger.debug(f"读取缓存鼠类视频配置失败 {key}: {exc}")
+    return default
 
 
 def _resolve_mouse_model_candidates() -> List[Path]:
@@ -123,6 +178,11 @@ def _get_mouse_yolo_model() -> Any:
 def warmup_mouse_yolo_model() -> Any:
     """Load mouse YOLO model and run one dummy prediction to finish first-use initialization."""
 
+    if get_mouse_is_test_video():
+        # 修改：测试视频模式不需要鼠类模型，启动预加载时直接跳过。
+        logger.info("鼠类测试视频模式已开启，跳过 YOLO 模型预加载")
+        return None
+
     global _MOUSE_YOLO_WARMED_UP
     model = _get_mouse_yolo_model()
     if _MOUSE_YOLO_WARMED_UP:
@@ -165,10 +225,8 @@ def get_mouse_detection_conf_threshold() -> float:
     """Read mouse detection confidence threshold from server_config.ini."""
 
     try:
-        server_cfg = global_setting.get_setting("server_config")
-        if server_cfg is not None:
-            conf = float(server_cfg["Video_Process"].get("conf_threshold", MOUSE_DETECTION_CONF_THRESHOLD))
-            return min(1.0, max(0.0, conf))
+        conf = float(_get_video_process_config_value("conf_threshold", MOUSE_DETECTION_CONF_THRESHOLD))
+        return min(1.0, max(0.0, conf))
     except Exception as exc:
         logger.warning(f"读取视频检测置信度阈值失败，使用默认值 {MOUSE_DETECTION_CONF_THRESHOLD}: {exc}")
     return MOUSE_DETECTION_CONF_THRESHOLD
@@ -178,28 +236,54 @@ def get_mouse_detection_iou_threshold() -> float:
     """Read mouse detection IoU threshold from server_config.ini."""
 
     try:
-        server_cfg = global_setting.get_setting("server_config")
-        if server_cfg is not None:
-            iou = float(server_cfg["Video_Process"].get("iou_threshold", MOUSE_DETECTION_IOU_THRESHOLD))
-            return min(1.0, max(0.0, iou))
+        iou = float(_get_video_process_config_value("iou_threshold", MOUSE_DETECTION_IOU_THRESHOLD))
+        return min(1.0, max(0.0, iou))
     except Exception as exc:
         logger.warning(f"读取视频检测 IOU 阈值失败，使用默认值 {MOUSE_DETECTION_IOU_THRESHOLD}: {exc}")
     return MOUSE_DETECTION_IOU_THRESHOLD
+
+
+def get_mouse_track_confirm_frames() -> int:
+    """Read mouse stable track confirm frames from server_config.ini."""
+
+    try:
+        value = int(_get_video_process_config_value("track_confirm_frames", MOUSE_TRACK_CONFIRM_FRAMES))
+        return max(1, value)
+    except Exception as exc:
+        logger.warning(f"读取鼠类稳定计数确认帧数失败，使用默认值 {MOUSE_TRACK_CONFIRM_FRAMES}: {exc}")
+    return MOUSE_TRACK_CONFIRM_FRAMES
+
+
+def get_mouse_is_test_video() -> bool:
+    """Read whether mouse video test mode is enabled from server_config.ini."""
+
+    try:
+        raw_value = str(_get_video_process_config_value("Is_Test_Video", MOUSE_IS_TEST_VIDEO)).strip().lower()
+        return raw_value in {"1", "true", "yes", "on"}
+    except Exception as exc:
+        logger.warning(f"读取鼠类测试视频模式失败，使用默认值 {MOUSE_IS_TEST_VIDEO}: {exc}")
+    return MOUSE_IS_TEST_VIDEO
+
+
+def get_mouse_test_video_nums() -> int:
+    """Read fixed mouse count used in mouse video test mode from server_config.ini."""
+
+    try:
+        value = int(_get_video_process_config_value("Is_Test_video_Nums", MOUSE_IS_TEST_VIDEO_NUMS))
+        return max(0, value)
+    except Exception as exc:
+        logger.warning(f"读取鼠类测试视频数量失败，使用默认值 {MOUSE_IS_TEST_VIDEO_NUMS}: {exc}")
+    return MOUSE_IS_TEST_VIDEO_NUMS
 
 
 def get_mouse_use_ultralytics_tracker() -> bool:
     """Read whether to use Ultralytics tracker from server_config.ini."""
 
     try:
-        server_cfg = global_setting.get_setting("server_config")
-        if server_cfg is None:
-            return MOUSE_USE_ULTRALYTICS_TRACKER
-        raw_value = str(
-            server_cfg["Video_Process"].get(
-                "use_ultralytics_tracker",
-                "1" if MOUSE_USE_ULTRALYTICS_TRACKER else "0",
-            )
-        ).strip().lower()
+        raw_value = str(_get_video_process_config_value(
+            "use_ultralytics_tracker",
+            "1" if MOUSE_USE_ULTRALYTICS_TRACKER else "0",
+        )).strip().lower()
         if raw_value in {"1", "true", "yes", "on"}:
             return _ultralytics_tracker_deps_ready()
         if raw_value in {"0", "false", "no", "off"}:
@@ -213,11 +297,9 @@ def get_mouse_tracker_config() -> str:
     """Read Ultralytics tracker yaml from server_config.ini."""
 
     try:
-        server_cfg = global_setting.get_setting("server_config")
-        if server_cfg is not None:
-            tracker = str(server_cfg["Video_Process"].get("tracker", MOUSE_TRACKER_CONFIG)).strip()
-            if tracker:
-                return tracker
+        tracker = str(_get_video_process_config_value("tracker", MOUSE_TRACKER_CONFIG)).strip()
+        if tracker:
+            return tracker
     except Exception as exc:
         logger.warning(f"读取视频跟踪器配置失败，使用默认值 {MOUSE_TRACKER_CONFIG}: {exc}")
     return MOUSE_TRACKER_CONFIG
@@ -284,6 +366,16 @@ def _extract_yolo_track_ids(result: Any) -> List[Optional[int]]:
     return [int(track_id) for track_id in track_ids.detach().cpu().tolist()]
 
 
+def _extract_yolo_confidences(result: Any) -> List[float]:
+    """Extract detection confidences from an Ultralytics result."""
+
+    boxes = getattr(result, "boxes", None)
+    confidences = getattr(boxes, "conf", None) if boxes is not None else None
+    if confidences is None:
+        return []
+    return [float(conf) for conf in confidences.detach().cpu().tolist()]
+
+
 def _box_center(box: Tuple[float, float, float, float]) -> Tuple[float, float]:
     x1, y1, x2, y2 = box
     return (x1 + x2) / 2.0, (y1 + y2) / 2.0
@@ -302,23 +394,58 @@ def _draw_mouse_count_label(frame: Any, mouse_count: int) -> None:
     cv2.putText(frame, label, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
 
 
+def _draw_mouse_annotations(
+    frame: Any,
+    detections: List[Tuple[float, float, float, float]],
+    stable_ids: Optional[List[Optional[int]]] = None,
+    confidences: Optional[List[float]] = None,
+) -> None:
+    """Draw mouse boxes with stable IDs produced by _MouseTrackCounter."""
+
+    stable_ids = stable_ids or [None] * len(detections)
+    confidences = confidences or []
+    height, width = frame.shape[:2]
+    for idx, box in enumerate(detections):
+        x1, y1, x2, y2 = [int(round(v)) for v in box]
+        x1 = max(0, min(width - 1, x1))
+        y1 = max(0, min(height - 1, y1))
+        x2 = max(0, min(width - 1, x2))
+        y2 = max(0, min(height - 1, y2))
+        stable_id = stable_ids[idx] if idx < len(stable_ids) else None
+        label = f"Mouse ID {stable_id}" if stable_id is not None else "Mouse"
+        if idx < len(confidences):
+            label = f"{label} {confidences[idx]:.2f}"
+
+        # 修改：检测框使用稳定个体 ID，而不是 ByteTrack 临时 ID，避免同一只老鼠框上的编号变化。
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        text_size, _baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        text_w, text_h = text_size
+        text_y = max(0, y1 - text_h - 8)
+        cv2.rectangle(frame, (x1, text_y), (min(width - 1, x1 + text_w + 8), y1), (0, 128, 0), -1)
+        cv2.putText(frame, label, (x1 + 4, max(text_h + 2, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+
+
 class _MouseTrackCounter:
     """Count stable mouse identities while merging short tracking id breaks."""
 
     def __init__(
         self,
         fps: float,
-        confirm_frames: int = MOUSE_TRACK_CONFIRM_FRAMES,
-        max_gap_seconds: float = 2.0,
-        merge_iou_threshold: float = 0.15,
+        confirm_frames: Optional[int] = None,
+        max_gap_seconds: float = 3.0,
+        merge_iou_threshold: float = 0.08,
+        center_distance_factor: float = 2.4,
     ) -> None:
-        self.confirm_frames = confirm_frames
-        self.max_gap_frames = max(confirm_frames, int(max_gap_seconds * max(fps, 1.0)))
+        # 修改：稳定计数确认帧数从 server_config.ini 读取，未传入时使用配置值。
+        self.confirm_frames = confirm_frames if confirm_frames is not None else get_mouse_track_confirm_frames()
+        self.max_gap_frames = max(self.confirm_frames, int(max_gap_seconds * max(fps, 1.0)))
         self.merge_iou_threshold = merge_iou_threshold
+        self.center_distance_factor = center_distance_factor
         self.frame_index = 0
         self.next_entity_id = 1
         self.track_to_entity: Dict[int, int] = {}
         self.entities: Dict[int, Dict[str, Any]] = {}
+        self.last_detection_entity_ids: List[Optional[int]] = []
 
     def update(
         self,
@@ -327,19 +454,25 @@ class _MouseTrackCounter:
     ) -> int:
         self.frame_index += 1
         track_ids = track_ids or [None] * len(detections)
-        updated_entities = set()
+        if len(track_ids) < len(detections):
+            track_ids = track_ids + [None] * (len(detections) - len(track_ids))
+        self.last_detection_entity_ids = [None] * len(detections)
 
-        for box, track_id in zip(detections, track_ids):
-            entity_id = self._resolve_entity(box, track_id, updated_entities)
-            entity = self.entities[entity_id]
-            entity["box"] = box
-            entity["last_frame"] = self.frame_index
-            entity["hits"] += 1
-            if entity["hits"] >= self.confirm_frames:
-                entity["confirmed"] = True
-            updated_entities.add(entity_id)
-            if track_id is not None:
-                self.track_to_entity[int(track_id)] = entity_id
+        # 修改：不再直接相信 tracker 临时 ID，先按历史个体与当前检测框做全局匹配，避免同一只老鼠换 ID 后重复计数。
+        assignments = self._match_detections_to_entities(detections, track_ids)
+        assigned_detection_indexes = set()
+
+        for det_idx, entity_id in assignments.items():
+            self._update_entity(entity_id, detections[det_idx], track_ids[det_idx])
+            self.last_detection_entity_ids[det_idx] = entity_id
+            assigned_detection_indexes.add(det_idx)
+
+        for det_idx, box in enumerate(detections):
+            if det_idx in assigned_detection_indexes:
+                continue
+            entity_id = self._create_entity(box)
+            self._update_entity(entity_id, box, track_ids[det_idx])
+            self.last_detection_entity_ids[det_idx] = entity_id
 
         return self.count
 
@@ -347,66 +480,102 @@ class _MouseTrackCounter:
     def count(self) -> int:
         return sum(1 for entity in self.entities.values() if entity["confirmed"])
 
-    def _resolve_entity(
+    def _update_entity(
         self,
+        entity_id: int,
         box: Tuple[float, float, float, float],
         track_id: Optional[int],
-        updated_entities: set,
-    ) -> int:
+    ) -> None:
+        entity = self.entities[entity_id]
+        previous_center = entity.get("center")
+        current_center = _box_center(box)
+        if previous_center is not None:
+            entity["velocity"] = (
+                current_center[0] - previous_center[0],
+                current_center[1] - previous_center[1],
+            )
+        entity["center"] = current_center
+        entity["box"] = box
+        entity["last_frame"] = self.frame_index
+        entity["hits"] += 1
+        if entity["hits"] >= self.confirm_frames:
+            entity["confirmed"] = True
         if track_id is not None:
-            mapped_entity = self.track_to_entity.get(int(track_id))
-            if mapped_entity is not None:
-                return mapped_entity
+            # 修改：track_id 只作为后续匹配的辅助线索，不再单独决定一个独立个体。
+            self.track_to_entity[int(track_id)] = entity_id
 
-        matched_entity = self._find_recent_entity(box, updated_entities)
-        if matched_entity is not None:
-            return matched_entity
-
+    def _create_entity(self, box: Tuple[float, float, float, float]) -> int:
         entity_id = self.next_entity_id
         self.next_entity_id += 1
         self.entities[entity_id] = {
             "box": box,
+            "center": _box_center(box),
+            "velocity": (0.0, 0.0),
             "hits": 0,
             "last_frame": self.frame_index,
             "confirmed": False,
         }
         return entity_id
 
-    def _find_recent_entity(
+    def _match_detections_to_entities(
+        self,
+        detections: List[Tuple[float, float, float, float]],
+        track_ids: List[Optional[int]],
+    ) -> Dict[int, int]:
+        candidates: List[Tuple[float, int, int]] = []
+        for det_idx, box in enumerate(detections):
+            track_id = track_ids[det_idx] if det_idx < len(track_ids) else None
+            for entity_id, entity in self.entities.items():
+                score = self._match_score(box, track_id, entity_id, entity)
+                if score is not None:
+                    candidates.append((score, det_idx, entity_id))
+
+        assignments: Dict[int, int] = {}
+        used_entities = set()
+        for _score, det_idx, entity_id in sorted(candidates, reverse=True):
+            if det_idx in assignments or entity_id in used_entities:
+                continue
+            assignments[det_idx] = entity_id
+            used_entities.add(entity_id)
+
+        return assignments
+
+    def _match_score(
         self,
         box: Tuple[float, float, float, float],
-        updated_entities: set,
-    ) -> Optional[int]:
-        best_entity_id = None
-        best_score = 0.0
+        track_id: Optional[int],
+        entity_id: int,
+        entity: Dict[str, Any],
+    ) -> Optional[float]:
+        frame_gap = self.frame_index - entity["last_frame"]
+        if frame_gap > self.max_gap_frames:
+            return None
+
+        previous_box = entity["box"]
+        iou = _box_iou(previous_box, box)
         cx, cy = _box_center(box)
-        diag = max(_box_diag(box), 1.0)
+        px, py = entity.get("center") or _box_center(previous_box)
+        vx, vy = entity.get("velocity", (0.0, 0.0))
+        predicted_x = px + vx * min(frame_gap, 8)
+        predicted_y = py + vy * min(frame_gap, 8)
+        center_distance = ((cx - predicted_x) ** 2 + (cy - predicted_y) ** 2) ** 0.5
 
-        for entity_id, entity in self.entities.items():
-            if entity_id in updated_entities:
-                continue
-            frame_gap = self.frame_index - entity["last_frame"]
-            if frame_gap > self.max_gap_frames:
-                continue
+        diag = max(_box_diag(box), _box_diag(previous_box), 1.0)
+        # 修改：短暂漏检后同一只老鼠的框可能跳动，按丢帧间隔放宽中心点匹配距离。
+        distance_limit = max(70.0, diag * (self.center_distance_factor + 0.18 * min(frame_gap, 10)))
 
-            previous_box = entity["box"]
-            iou = _box_iou(previous_box, box)
-            px, py = _box_center(previous_box)
-            center_distance = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
-            distance_limit = max(50.0, diag * 0.8)
+        mapped_entity = self.track_to_entity.get(int(track_id)) if track_id is not None else None
+        track_bonus = 1.2 if mapped_entity == entity_id else 0.0
+        if mapped_entity is not None and mapped_entity != entity_id and iou < self.merge_iou_threshold:
+            return None
 
-            if iou >= self.merge_iou_threshold:
-                score = 2.0 + iou
-            elif center_distance <= distance_limit:
-                score = 1.0 - (center_distance / distance_limit)
-            else:
-                continue
-
-            if score > best_score:
-                best_score = score
-                best_entity_id = entity_id
-
-        return best_entity_id
+        if iou >= self.merge_iou_threshold:
+            return 3.0 + track_bonus + iou
+        if center_distance <= distance_limit:
+            return track_bonus + 1.0 - (center_distance / distance_limit)
+        if mapped_entity == entity_id and center_distance <= distance_limit * 1.5:
+            return 0.5
+        return None
 
 
 class _SimpleMouseTracker:
@@ -689,7 +858,6 @@ class Video_process(QThread):
                 logger.info(f"{video_path} 使用预览阶段识别数量: {preview_count}")
                 return preview_count
 
-            model = _get_mouse_yolo_model()
             cap = cv2.VideoCapture(str(video_full_path))
             if not cap.isOpened():
                 report_logger.error(f"{video_path}视频无法打开")
@@ -710,6 +878,9 @@ class Video_process(QThread):
                 report_logger.error(f"{video_path}标注视频创建失败")
                 return 0
 
+            is_test_video = get_mouse_is_test_video()
+            test_mouse_count = get_mouse_test_video_nums()
+            model = None if is_test_video else _get_mouse_yolo_model()
             # 修改：用稳定轨迹计数器替代“见过几个 track_id”，可合并短暂丢失后重新分配的 ID。
             mouse_counter = _MouseTrackCounter(fps=fps)
             conf_threshold = get_mouse_detection_conf_threshold()
@@ -722,6 +893,13 @@ class Video_process(QThread):
                 ok, frame = cap.read()
                 if not ok:
                     break
+
+                if is_test_video:
+                    # 修改：测试视频模式不跑模型检测，只播放/归档原视频帧并显示配置的固定数量。
+                    annotated_frame = frame.copy()
+                    _draw_mouse_count_label(annotated_frame, test_mouse_count)
+                    writer.write(annotated_frame)
+                    continue
 
                 # 修改：默认用 predict + 稳定轨迹计数器，避免 ByteTrack 的 scipy/lap 依赖异常。
                 if use_ultralytics_tracker:
@@ -760,14 +938,21 @@ class Video_process(QThread):
 
                 detections = _extract_yolo_boxes(result)
                 track_ids = _extract_yolo_track_ids(result)
+                confidences = _extract_yolo_confidences(result)
                 mouse_counter.update(detections, track_ids)
 
-                # 修改：result.plot() 在部分环境会返回只读数组，复制后再用 OpenCV 叠加数量标签。
-                annotated_frame = result.plot().copy()
+                # 修改：自绘检测框和稳定个体 ID，避免 ByteTrack 临时 ID 变化导致框上编号变化。
+                annotated_frame = frame.copy()
+                _draw_mouse_annotations(
+                    annotated_frame,
+                    detections,
+                    mouse_counter.last_detection_entity_ids,
+                    confidences,
+                )
                 _draw_mouse_count_label(annotated_frame, mouse_counter.count)
                 writer.write(annotated_frame)
 
-            mouse_count = mouse_counter.count
+            mouse_count = test_mouse_count if is_test_video else mouse_counter.count
             logger.info(f"{video_path} 老鼠独立个体统计: {mouse_count}")
 
             cap.release()

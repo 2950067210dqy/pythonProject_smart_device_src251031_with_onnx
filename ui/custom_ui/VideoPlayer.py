@@ -13,12 +13,16 @@ from loguru import logger
 from config.global_setting import global_setting
 from server.video_process import (
     _MouseTrackCounter,
+    _draw_mouse_annotations,
     _draw_mouse_count_label,
     _extract_yolo_boxes,
+    _extract_yolo_confidences,
     _extract_yolo_track_ids,
     _get_mouse_yolo_model,
     get_mouse_detection_conf_threshold,
     get_mouse_detection_iou_threshold,
+    get_mouse_is_test_video,
+    get_mouse_test_video_nums,
     get_mouse_tracker_config,
     get_mouse_use_ultralytics_tracker,
     warmup_mouse_yolo_model,
@@ -60,7 +64,9 @@ class _VideoDetectionWorker(QThread):
         cap = None
         writer = None
         try:
-            model = _get_mouse_yolo_model()
+            is_test_video = get_mouse_is_test_video()
+            test_mouse_count = get_mouse_test_video_nums()
+            model = None if is_test_video else _get_mouse_yolo_model()
             cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
                 self.playback_failed.emit(f"视频无法打开: {self.video_path}")
@@ -117,6 +123,21 @@ class _VideoDetectionWorker(QThread):
                     frame_number = counted_frame_watermark + 1
                 should_count_frame = frame_number > counted_frame_watermark
 
+                if is_test_video:
+                    # 修改：测试视频模式不跑模型检测，只播放原视频帧并显示配置的固定数量。
+                    annotated_frame = frame.copy()
+                    _draw_mouse_count_label(annotated_frame, test_mouse_count)
+                    if should_count_frame:
+                        counted_frame_watermark = frame_number
+                        writer.write(annotated_frame)
+                    self.frame_ready.emit(self._to_qimage(annotated_frame))
+                    position_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC) or 0)
+                    self.position_changed.emit(position_ms)
+                    wait_seconds = max(0.0, (1.0 / fps) - (time.monotonic() - frame_start))
+                    if wait_seconds > 0:
+                        time.sleep(wait_seconds)
+                    continue
+
                 # 修改：默认用 predict + 稳定轨迹计数器，避免 ByteTrack 的 scipy/lap 依赖异常。
                 if use_ultralytics_tracker and should_count_frame:
                     try:
@@ -153,10 +174,13 @@ class _VideoDetectionWorker(QThread):
                 else:
                     detections = _extract_yolo_boxes(result)
                     track_ids = _extract_yolo_track_ids(result)
+                    confidences = _extract_yolo_confidences(result)
                     if should_count_frame:
                         mouse_counter.update(detections, track_ids)
-                    # 修改：result.plot() 在部分环境会返回只读数组，复制后再用 OpenCV 叠加数量标签。
-                    annotated_frame = result.plot().copy()
+                    # 修改：预览画面自绘稳定个体 ID，不显示 ByteTrack 临时 ID，避免同一只老鼠编号变化。
+                    annotated_frame = frame.copy()
+                    stable_ids = mouse_counter.last_detection_entity_ids if should_count_frame else [None] * len(detections)
+                    _draw_mouse_annotations(annotated_frame, detections, stable_ids, confidences)
 
                 if should_count_frame:
                     counted_frame_watermark = frame_number
@@ -173,7 +197,7 @@ class _VideoDetectionWorker(QThread):
                     time.sleep(wait_seconds)
 
             if self._running:
-                self.playback_finished.emit(mouse_counter.count, self.output_path)
+                self.playback_finished.emit(test_mouse_count if is_test_video else mouse_counter.count, self.output_path)
         except Exception as exc:
             self.playback_failed.emit(str(exc))
         finally:

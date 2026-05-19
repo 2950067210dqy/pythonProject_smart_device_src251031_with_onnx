@@ -8,7 +8,7 @@ from config.global_setting import global_setting
 from PyQt6 import QtCore
 from PyQt6.QtCore import QRect, QThread, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QMainWindow, QTextBrowser, QVBoxLayout, QScrollArea, QPushButton, QHBoxLayout, \
-    QTextEdit, QPlainTextEdit, QSlider, QLabel, QStackedWidget, QComboBox, QSizePolicy
+    QTextEdit, QPlainTextEdit, QSlider, QLabel, QStackedWidget, QComboBox, QSizePolicy, QSplitter
 
 from theme.ThemeQt6 import ThemedWidget
 from ui.custom_ui.BarChart import BarChartApp
@@ -172,6 +172,7 @@ class Tab_7(ThemedWidget):
         self.media_stack = None
         self.image_page = None
         self.video_page = None
+        self.top_splitter = None
         self.default_device = self.DEVICE_YL
         # 实例化ui
         self._init_ui(parent, geometry, title)
@@ -196,22 +197,75 @@ class Tab_7(ThemedWidget):
         self.ui = Ui_tab7_frame()
         self.ui.setupUi(self.frame)
         self._make_layout_adaptive()
+        self._init_top_splitter()
 
         # 运行时设置布局伸缩（避免 .ui 中 stretch 属性生成错误的 setStretch 调用）
         try:
             # 修改：各区域用伸缩比例自适应窗口大小，避免固定最小宽高撑住窗口。
             self.ui.main_layout.setStretch(0, 8)
             self.ui.main_layout.setStretch(1, 2)
-            self.ui.top_layout.setStretch(0, 3)
-            self.ui.top_layout.setStretch(1, 2)
+            if self.top_splitter is not None:
+                self.ui.top_layout.setStretch(0, 1)
+                self.top_splitter.setStretchFactor(0, 45)
+                self.top_splitter.setStretchFactor(1, 55)
+                self.top_splitter.setSizes([450, 550])
+            else:
+                self.ui.top_layout.setStretch(0, 2)
+                self.ui.top_layout.setStretch(1, 3)
             self.ui.left_panel_layout.setStretch(0, 1)
             self.ui.left_panel_layout.setStretch(1, 8)
         except Exception as e:
             logger.debug(f"[Tab7] setStretch runtime adjust failed: {e}")
 
         self._adjust_path_display_height()
+        QtCore.QTimer.singleShot(0, self._apply_top_splitter_default_sizes)
         self._retranslateUi()
         pass
+
+    def _init_top_splitter(self):
+        """将媒体区和图表区放入横向 QSplitter，默认媒体 45%、图表 55%。"""
+
+        try:
+            left_panel: QWidget = self.frame.findChild(QWidget, "left_panel")
+            graphic_frame: QWidget = self.frame.findChild(QWidget, "graphic_frame")
+            if left_panel is None or graphic_frame is None:
+                logger.debug("[Tab7] top splitter skipped: left_panel or graphic_frame missing")
+                return
+
+            splitter = QSplitter(QtCore.Qt.Orientation.Horizontal, self.ui.centralwidget)
+            splitter.setObjectName("top_splitter")
+            splitter.setChildrenCollapsible(False)
+            splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+            self.ui.top_layout.removeWidget(left_panel)
+            self.ui.top_layout.removeWidget(graphic_frame)
+            splitter.addWidget(left_panel)
+            splitter.addWidget(graphic_frame)
+            splitter.setStretchFactor(0, 45)
+            splitter.setStretchFactor(1, 55)
+            splitter.setSizes([450, 550])
+
+            self.ui.top_layout.addWidget(splitter)
+            self.top_splitter = splitter
+        except Exception as e:
+            logger.debug(f"[Tab7] 初始化顶部 splitter 失败: {e}")
+
+    def _apply_top_splitter_default_sizes(self):
+        """在布局完成后应用默认比例：媒体区 45%，图表区 55%。"""
+
+        if self.top_splitter is None:
+            return
+        try:
+            total_width = self.top_splitter.width()
+            if total_width <= 0:
+                total_width = self.ui.centralwidget.width()
+            if total_width <= 0:
+                total_width = self.frame.width()
+            media_width = max(1, int(total_width * 0.45))
+            chart_width = max(1, total_width - media_width)
+            self.top_splitter.setSizes([media_width, chart_width])
+        except Exception as e:
+            logger.debug(f"[Tab7] 应用顶部 splitter 默认比例失败: {e}")
 
     def _make_layout_adaptive(self):
         """清理 UI 生成文件里的固定最小/最大尺寸，让窗口和子组件按布局自适应。"""
